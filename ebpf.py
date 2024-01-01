@@ -8,20 +8,13 @@
 
 from idaapi import *
 from idc import *
+from idautils import *
+
 import string
 
-# 'manually' crafted from include/uapi/linux/bpf.h header from kernel v5.13
-# will need to periodically update this as new helpers are added.
-#
-# run just the preprocessor (gcc -E) on the snippet defining the `bpf_func_id` enum,
-# then format the names into an array, preserving order (some search/replace in vim)
-# this makes the `helper_names` array, which we then use for everything else.
-# It's critical the order of names is not changed from how they appear in the processed
-# source, because enums assign integer values in order.
-
-helper_names = [ "BPF_FUNC_unspec", "map_lookup_elem", "map_update_elem", "map_delete_elem", "probe_read", "ktime_get_ns", "trace_printk", "get_prandom_u32", "get_smp_processor_id", "skb_store_bytes", "l3_csum_replace", "l4_csum_replace", "tail_call", "clone_redirect", "get_current_pid_tgid", "get_current_uid_gid", "get_current_comm", "get_cgroup_classid", "skb_vlan_push", "skb_vlan_pop", "skb_get_tunnel_key", "skb_set_tunnel_key", "perf_event_read", "redirect", "get_route_realm", "perf_event_output", "skb_load_bytes", "get_stackid", "csum_diff", "skb_get_tunnel_opt", "skb_set_tunnel_opt", "skb_change_proto", "skb_change_type", "skb_under_cgroup", "get_hash_recalc", "get_current_task", "probe_write_user", "current_task_under_cgroup", "skb_change_tail", "skb_pull_data", "csum_update", "set_hash_invalid", "get_numa_node_id", "skb_change_head", "xdp_adjust_head", "probe_read_str", "get_socket_cookie", "get_socket_uid", "set_hash", "setsockopt", "skb_adjust_room", "redirect_map", "sk_redirect_map", "sock_map_update", "xdp_adjust_meta", "perf_event_read_value", "perf_prog_read_value", "getsockopt", "override_return", "sock_ops_cb_flags_set", "msg_redirect_map", "msg_apply_bytes", "msg_cork_bytes", "msg_pull_data", "bind", "xdp_adjust_tail", "skb_get_xfrm_state", "get_stack", "skb_load_bytes_relative", "fib_lookup", "sock_hash_update", "msg_redirect_hash", "sk_redirect_hash", "lwt_push_encap", "lwt_seg6_store_bytes", "lwt_seg6_adjust_srh", "lwt_seg6_action", "rc_repeat", "rc_keydown", "skb_cgroup_id", "get_current_cgroup_id", "get_local_storage", "sk_select_reuseport", "skb_ancestor_cgroup_id", "sk_lookup_tcp", "sk_lookup_udp", "sk_release", "map_push_elem", "map_pop_elem", "map_peek_elem", "msg_push_data", "msg_pop_data", "rc_pointer_rel", "spin_lock", "spin_unlock", "sk_fullsock", "tcp_sock", "skb_ecn_set_ce", "get_listener_sock", "skc_lookup_tcp", "tcp_check_syncookie", "sysctl_get_name", "sysctl_get_current_value", "sysctl_get_new_value", "sysctl_set_new_value", "strtol", "strtoul", "sk_storage_get", "sk_storage_delete", "send_signal", "tcp_gen_syncookie", "skb_output", "probe_read_user", "probe_read_kernel", "probe_read_user_str", "probe_read_kernel_str", "tcp_send_ack", "send_signal_thread", "jiffies64", "read_branch_records", "get_ns_current_pid_tgid", "xdp_output", "get_netns_cookie", "get_current_ancestor_cgroup_id", "sk_assign", "ktime_get_boot_ns", "seq_printf", "seq_write", "sk_cgroup_id", "sk_ancestor_cgroup_id", "ringbuf_output", "ringbuf_reserve", "ringbuf_submit", "ringbuf_discard", "ringbuf_query", "csum_level", "skc_to_tcp6_sock", "skc_to_tcp_sock", "skc_to_tcp_timewait_sock", "skc_to_tcp_request_sock", "skc_to_udp6_sock", "get_task_stack", "load_hdr_opt", "store_hdr_opt", "reserve_hdr_opt", "inode_storage_get", "inode_storage_delete", "d_path", "copy_from_user", "snprintf_btf", "seq_printf_btf", "skb_cgroup_classid", "redirect_neigh", "per_cpu_ptr", "this_cpu_ptr", "redirect_peer", "task_storage_get", "task_storage_delete", "get_current_task_btf", "bprm_opts_set", "ktime_get_coarse_ns", "ima_inode_hash", "sock_from_file", "check_mtu", "for_each_map_elem", "snprintf", "__BPF_FUNC_MAX_ID" ]
-
-helper_id_to_name = {i: helper_names[i] for i in range(len(helper_names))}
+from elftools.elf.elffile import ELFFile
+from elftools.elf.relocation import RelocationSection
+from elftools.elf.sections import StringTableSection
 
 # BPF ALU defines from uapi/linux/bpf_common.h
 # Mainly using these for disassembling atomic instructions
@@ -46,19 +39,14 @@ BPF_CMPXCHG = (0xf0 | BPF_FETCH) # /* atomic compare-and-write */
 # being lazy, we only use this for atomic ops so far
 bpf_alu_string = {BPF_ADD: 'add', BPF_AND: 'and', BPF_OR: 'or', BPF_XOR: 'xor'}
 
-def dump_helpers():
-    print("bpf helpers id -> name")
-    for k, v in helper_id_to_name.items():
-        print(f"{k} -> {v}")
-
-def lookup_helper(helper_id: int) -> str :
-    return helper_id_to_name[helper_id]
-
 class DecodingError(Exception):
     pass
 
 class INST_TYPES(object):
     pass
+
+relocations = {}
+extern_segment = 0x00
 
 class EBPFProc(processor_t):
     id = 0xeb7f
@@ -110,6 +98,34 @@ class EBPFProc(processor_t):
         
         self.init_instructions()
         self.init_registers()
+
+    def ev_newfile(self, fname):
+        with open(fname, 'rb') as f:
+            elffile = ELFFile(f)
+
+            reldyn_name = '.rel.dyn'
+            reldyn = elffile.get_section_by_name(reldyn_name)
+
+            if not reldyn or not isinstance(reldyn, RelocationSection):
+                # relocations section not found
+                return True
+            
+            dynstr_name = '.dynstr'
+            dynstr = elffile.get_section_by_name(dynstr_name)
+
+            if not dynstr or not isinstance(dynstr, StringTableSection):
+                # relocations section not found
+                return True
+            
+            func_names = dynstr.data().split(b'\x00')
+            
+            for reloc in reldyn.iter_relocations():
+                if reloc['r_info_type'] == 10:
+                    if func_names[reloc['r_info_sym']].decode() not in ['entrypoint', 'custom_panic']:
+                        relocations[reloc['r_offset']] = func_names[reloc['r_info_sym']].decode()
+        print(relocations)
+        extern_segment = get_last_seg().start_ea
+        return True
 
     def init_instructions(self):
         # there is a logic behind the opcode values but I chose to ignore it
@@ -252,7 +268,6 @@ class EBPFProc(processor_t):
         except DecodingError:
             return 0
 
-    # XXX: NOTE: we never set offb for any operands, should we?
     def _ana(self, insn):
         self.opcode = insn.get_next_byte()
         registers = insn.get_next_byte()
@@ -262,9 +277,6 @@ class EBPFProc(processor_t):
         
         # TODO: should we just handle the 16-bit signed stuff here?
         self.off = insn.get_next_word()
-
-        # if self.off & 0x8000:
-        #     self.off -= 0x10000
             
         self.imm = insn.get_next_dword()
         
@@ -322,10 +334,11 @@ class EBPFProc(processor_t):
         insn[0].value = self.imm
         insn[0].dtype = dt_dword
 
-        offset = ctypes.c_int32(self.imm).value
-        #print("call with offset", offset)
+        if insn.ea in relocations:
+            insn[0].addr = insn.ea
+            return
 
-        # TODO: check if static calls were used or function registry lookup
+        offset = ctypes.c_int32(self.imm).value
         if self.src == 0:
             # call imm
             insn[0].addr = 8 * offset
@@ -466,13 +479,10 @@ class EBPFProc(processor_t):
         # TODO: Determine difference between calling helper and tail-calling other BPF program
         # TODO: use FLIRT/whatever to make nice annotations for helper calls, like we get for typical PEs
         if Feature & CF_CALL:
-            insn.add_cref(insn[0].addr, insn.ea + insn[0].offb, fl_CN)
-        #if Feature & CF_CALL:
-            # call into eBPF helper
-            #helper_name = lookup_helper(insn[0].value)
-            #print(f"[eb_emu_insn] call helper: {helper_name}")
-            #print("[ev_emu_insn] (0x{:x}) call offb: {} addr: {} value: {}".format(insn.ea, insn[0].offb, insn[0].addr, insn[0].value))
-            #pass
+            if insn.ea in relocations:
+                insn.add_cref(extern_segment, insn.ea + insn[0].offb, fl_F)
+            else:
+                insn.add_cref(insn[0].addr, insn.ea + insn[0].offb, fl_CN)
 
         # continue execution flow if not stop instruction (call), and not unconditional jump
         flow = (Feature & CF_STOP == 0) and not insn.itype == 0x5
@@ -517,20 +527,14 @@ class EBPFProc(processor_t):
                     print("[ev_out_insn] invalid operation type in immediate for atomic instruction")
             else:
                 print("[ev_out_insn] analysis error: 3rd parameter for atomic instruction must be o_imm. debug me!")
+        #elif ft & CF_CALL:
+        #    ctx.out_mnem(15, " syscall")
         else:
             ctx.out_mnem(15)
         
         if ft & CF_USE1:
             if ft & CF_CALL:
-                name = get_func_name(cmd[0].addr)
-                try:
-                    print(f'[{hex(cmd.ea)}] lookup func with imm', ctypes.c_int32(cmd[0].value))
-                    #TODO: This is probably better done elsewhere. Remove once that's figured out.
-                    helper_name = lookup_helper(cmd[0].value)
-                    print(f"[ev_out_insn] calling helper {helper_name}")
-                except KeyError:
-                    pass
-                    #print(f"[ev_out_insn] unknown bpf helper {cmd[0].value:#x}. You need to update the processor's list of helper functions using a newer Linux kernel source (include/uapi/linux/bpf.h).")
+                pass
             ctx.out_one_operand(0)
         if ft & CF_USE2:
             ctx.out_char(',')
@@ -554,8 +558,7 @@ class EBPFProc(processor_t):
                 seg = getseg(addr)
                 isString = False
                 if seg:
-                    flags = seg.flags
-                    if flags == 16: # .rodata
+                    if seg.sclass == 6: # CONST .rodata
                         try:
                             s = get_strlit_contents(addr, -1, -1).decode()
                             if len(s) > 20:
@@ -579,20 +582,22 @@ class EBPFProc(processor_t):
                 else:
                     ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
             elif op.dtype == dt_dword:
-                
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
             else:
                 print(f"[ev_out_operand] immediate operand, unhandled dtype: {op.dtype:#8x}")
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32) # TODO: improve default case/handle all cases
 
         elif op.type in [o_near, o_mem]:
-            ok = ctx.out_name_expr(op, op.addr, BADADDR)
-            if not ok:
-                ctx.out_tagon(COLOR_ERROR)
-                ctx.out_long(op.addr, 16)
-                ctx.out_tagoff(COLOR_ERROR)
-                # TODO: figure out how to get this operand's instruction's address to remember this problem
-                #remember_problem(PR_NONAME, insn.ea)
+            if op.type == o_near and op.addr in relocations:
+                ctx.out_printf(relocations[op.addr])
+            else:
+                ok = ctx.out_name_expr(op, op.addr, BADADDR)
+                if not ok:
+                    ctx.out_tagon(COLOR_ERROR)
+                    ctx.out_long(op.addr, 16)
+                    ctx.out_tagoff(COLOR_ERROR)
+                    # TODO: figure out how to get this operand's instruction's address to remember this problem
+                    #remember_problem(PR_NONAME, insn.ea)
                 
         elif op.type == o_phrase:
             # phrase operands are only encountered in absolute loads (eg: 0x20) which are implicitly
