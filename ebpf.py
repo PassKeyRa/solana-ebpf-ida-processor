@@ -99,6 +99,8 @@ class EBPFProc(processor_t):
         self.init_instructions()
         self.init_registers()
 
+    # temporary fix for getting the relocation table
+    # TODO: figure out, how to do it without loding the binary again
     def ev_newfile(self, fname):
         with open(fname, 'rb') as f:
             elffile = ELFFile(f)
@@ -114,16 +116,15 @@ class EBPFProc(processor_t):
             dynstr = elffile.get_section_by_name(dynstr_name)
 
             if not dynstr or not isinstance(dynstr, StringTableSection):
-                # relocations section not found
+                # dynstr section not found
                 return True
             
             func_names = dynstr.data().split(b'\x00')
             
             for reloc in reldyn.iter_relocations():
                 if reloc['r_info_type'] == 10:
-                    if func_names[reloc['r_info_sym']].decode() not in ['entrypoint', 'custom_panic']:
-                        relocations[reloc['r_offset']] = func_names[reloc['r_info_sym']].decode()
-        print(relocations)
+                    #if func_names[reloc['r_info_sym']].decode() not in ['entrypoint', 'custom_panic']:
+                    relocations[reloc['r_offset']] = func_names[reloc['r_info_sym']].decode()
         extern_segment = get_last_seg().start_ea
         return True
 
@@ -331,7 +332,7 @@ class EBPFProc(processor_t):
         insn[0].dtype = dt_dword
 
         if insn.ea in relocations:
-            insn[0].addr = insn.ea
+            insn[0].addr = BADADDR
             return
 
         offset = ctypes.c_int32(self.imm).value
@@ -351,16 +352,11 @@ class EBPFProc(processor_t):
 
     def _ana_jmp(self, insn):
         insn[0].type = o_near
-        # need to treat offset as a signed 16-bit integer to properly support backwards jumps,
-        # which are allowed in more recent eBPF
         offset = ctypes.c_int16(self.off).value
         if offset < 0:
-            #print("[_ana_jmp] backwards jump")
             pass
         insn[0].addr = 8*offset + insn.ea + 8
-        #print(f"[_ana_jmp] off: {self.off:#8x}, ea: {insn.ea:#8x}, addr: {insn[0].addr:#8x}")
-        # 0x05 case: signed 16-bit offset is the offset from PC to jump to
-        insn[0].dtype = dt_word # 16-bit offset
+        insn[0].dtype = dt_word
 
     def _ana_cond_jmp_reg_imm(self, insn):
         insn[0].type = o_reg
@@ -373,7 +369,6 @@ class EBPFProc(processor_t):
         
         offset = ctypes.c_int16(self.off).value
         if offset < 0:
-            #print("[_ana_cond_jmp_reg_imm] backwards jump")
             pass
         insn[2].type = o_near
         insn[2].addr = 8 * offset + insn.ea + 8
@@ -390,15 +385,13 @@ class EBPFProc(processor_t):
 
         offset = ctypes.c_int16(self.off).value
         if offset < 0:
-            #print("[_ana_cond_jmp_reg_reg] backwards jump")
             pass
         insn[2].type = o_near
         insn[2].addr = 8 * offset + insn.ea + 8
         insn[2].dtype = dt_dword
 
     def _ana_regdisp_reg(self, insn):
-        # all cases of this instruction have a 16-bit offset
-        # eg: stxdw [dst+off], src
+
         insn[0].type = o_displ
         insn[0].dtype = dt_word
         insn[0].value = self.off
@@ -418,7 +411,6 @@ class EBPFProc(processor_t):
         insn[1].dtype = dt_dword
         insn[1].reg = self.src
 
-        # operation is conveyed by immediate value, but not literally used as an operand
         insn[2].type = o_imm
         insn[2].dtype = dt_dword
         insn[2].value = self.imm
@@ -433,15 +425,12 @@ class EBPFProc(processor_t):
         insn[1].value = self.off
         insn[1].phrase = self.src
 
-        # indirect skb loads have hardcoded r0 as destination, but use src + imm to offset
-        # into an implicit skb
         if self.opcode in [0x40, 0x48, 0x50, 0x58]:
             insn[0].reg = 0 # hardcoded r0 destination
             insn[1].value = self.imm # use imm not offset for displacement
             insn[1].dtype = dt_dword # imm are 32-bit, off are 16-bit.
 
 
-    # Only actually used for absolute loads, which are hardcoded to r0 destination
     def _ana_phrase_imm(self, insn):
         insn[0].type = o_reg
         insn[0].dtype = dt_dword
@@ -457,7 +446,6 @@ class EBPFProc(processor_t):
 
         if Feature & CF_JUMP:
             dst_op_index = 0 if insn.itype == 0x5 else 2
-            #print("[ev_emu_insn] jump detected: 0x{:x} -> 0x{:x}".format(insn[dst_op_index].offb, insn[dst_op_index].addr))
             insn.add_cref(insn[dst_op_index].addr, insn[dst_op_index].offb, fl_JN)
             remember_problem(cvar.PR_JUMP, insn.ea) # PR_JUMP ignored?
 
@@ -472,13 +460,12 @@ class EBPFProc(processor_t):
                 #op_stkvar(insn.ea, op_ind)
                 pass
             
-        # TODO: Determine difference between calling helper and tail-calling other BPF program
         # TODO: use FLIRT/whatever to make nice annotations for helper calls, like we get for typical PEs
         if Feature & CF_CALL:
             if insn.ea in relocations:
-                insn.add_cref(extern_segment, insn.ea + insn[0].offb, fl_F)
+                insn.add_cref(extern_segment, insn[0].offb, fl_CN)
             else:
-                insn.add_cref(insn[0].addr, insn.ea + insn[0].offb, fl_CN)
+                insn.add_cref(insn[0].addr, insn[0].offb, fl_CN)
 
         # continue execution flow if not stop instruction (call), and not unconditional jump
         flow = (Feature & CF_STOP == 0) and not insn.itype == 0x5
@@ -523,7 +510,7 @@ class EBPFProc(processor_t):
                     print("[ev_out_insn] invalid operation type in immediate for atomic instruction")
             else:
                 print("[ev_out_insn] analysis error: 3rd parameter for atomic instruction must be o_imm. debug me!")
-        elif ft & CF_CALL and cmd.ops[0].addr in relocations:
+        elif ft & CF_CALL and cmd.ea in relocations and relocations[cmd.ea] not in ["entrypoint", "custom_panic"]:
             ctx.out_custom_mnem("syscall", 15)
         else:
             ctx.out_mnem(15)
@@ -547,7 +534,6 @@ class EBPFProc(processor_t):
         if op.type == o_reg:
             ctx.out_register(self.reg_names[op.reg])
 
-        # It appears that all uses of immediates are signed, hardcode treating them as signed.
         elif op.type == o_imm:
             if op.dtype == dt_qword:
                 addr = op.value
@@ -569,6 +555,7 @@ class EBPFProc(processor_t):
                                 if i in string.ascii_letters:
                                     sName_ += i
                             set_name(addr, sName_, SN_NOCHECK|SN_NOWARN|SN_FORCE)
+                            add_dref(ctx.insn_ea, addr, dr_R)
                             isString = True
                         except:
                             pass
@@ -581,33 +568,26 @@ class EBPFProc(processor_t):
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
             else:
                 print(f"[ev_out_operand] immediate operand, unhandled dtype: {op.dtype:#8x}")
-                ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32) # TODO: improve default case/handle all cases
+                ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
 
         elif op.type in [o_near, o_mem]:
-            if op.type == o_near and op.addr in relocations:
-                ctx.out_printf(relocations[op.addr])
+            if op.type == o_near and ctx.insn_ea in relocations:
+                ctx.out_printf(relocations[ctx.insn_ea])
             else:
                 ok = ctx.out_name_expr(op, op.addr, BADADDR)
                 if not ok:
                     ctx.out_tagon(COLOR_ERROR)
                     ctx.out_long(op.addr, 16)
                     ctx.out_tagoff(COLOR_ERROR)
-                    # TODO: figure out how to get this operand's instruction's address to remember this problem
-                    #remember_problem(PR_NONAME, insn.ea)
                 
         elif op.type == o_phrase:
-            # phrase operands are only encountered in absolute loads (eg: 0x20) which are implicitly
-            # in reference to a skb, which is how the linux kernel disassembles it
             ctx.out_printf('skb') # text color is a bit off. fix later.
             ctx.out_symbol('[')
             ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32) # "OpDecimal" fails on this, figure out why & fix it.
             ctx.out_symbol(']')
             
-        # All uses of displacement operands I've found so far are 16-bit signed.
         elif op.type == o_displ:
-            #print(f"[ev_out_operand] displacement dtype: {op.dtype:#8x} addr: {op.addr:#8x} value: {op.value:#8x}")
             if op.dtype == dt_dword:
-                # must be indirect load to be using 32-bit imm as phrase operand; skb implied
                 ctx.out_printf('skb')
             ctx.out_symbol('[')
             ctx.out_register(self.reg_names[op.phrase])
