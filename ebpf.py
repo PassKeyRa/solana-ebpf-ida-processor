@@ -248,8 +248,6 @@ class EBPFProc(processor_t):
         self.instruc_end = 0xff
         self.instruc = [({'name':self.OPCODES[i][0], 'feature':self.OPCODES[i][2]} if i in self.OPCODES else {'name':'unknown_opcode', 'feature':0}) for i in range(0xff)]
         
-        # self.icode_return = 0x95
-        
     def init_registers(self):
         self.reg_names = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10', 'CS', 'DS']
 
@@ -275,14 +273,12 @@ class EBPFProc(processor_t):
         self.src = (registers >> 4) & 15
         self.dst = registers & 15
         
-        # TODO: should we just handle the 16-bit signed stuff here?
         self.off = insn.get_next_word()
             
         self.imm = insn.get_next_dword()
         
-        # special case for longer (longest) instruction
         if self.opcode == 0x18:
-            insn.get_next_dword() # consume
+            insn.get_next_dword()
             imm2 = insn.get_next_dword()
             self.imm += imm2 << 32
 
@@ -527,8 +523,8 @@ class EBPFProc(processor_t):
                     print("[ev_out_insn] invalid operation type in immediate for atomic instruction")
             else:
                 print("[ev_out_insn] analysis error: 3rd parameter for atomic instruction must be o_imm. debug me!")
-        #elif ft & CF_CALL:
-        #    ctx.out_mnem(15, " syscall")
+        elif ft & CF_CALL and cmd.ops[0].addr in relocations:
+            ctx.out_custom_mnem("syscall", 15)
         else:
             ctx.out_mnem(15)
         
