@@ -15,6 +15,7 @@ solana program dump <address of an account> <output file>
 ## TODO
 
 * Fix XREFs for functions parsed from relocations
+* Figure out, how to parse relocations without loding the binary again
 * Add FLIRT signatures
 * Come up with more improvements for better bytecode readability
 
