@@ -54,7 +54,7 @@ class EBPFProc(processor_t):
     cnbits = 8
     dnbits = 8
     psnames = ['EBPF']
-    plnames = ['EBPF']
+    plnames = ['Solana VM']
     segreg_size = 0
     instruc_start = 0
     assembler = {
