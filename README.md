@@ -4,7 +4,7 @@ This is the processor plugin for IDA Pro that adds the ability to analyze Solana
 
 ## How to use
 
-Copy `ebpf.py` to the directory `<ida pro installation>/procs` and select the processor on a Solana program file loading to IDA.
+Copy `solana.py` to the directory `<ida pro installation>/procs` and select the processor on a Solana program file loading to IDA.
 
 To dump a program from Solana mainnet use the following command:
 
@@ -14,8 +14,7 @@ solana program dump <address of an account> <output file>
 
 ## TODO
 
-* Fix XREFs for functions parsed from relocations
-* Figure out, how to parse relocations without loding the binary again
+* Figure out, how to parse relocations without loading the binary again
 * Add FLIRT signatures
 * Come up with more improvements for better bytecode readability
 

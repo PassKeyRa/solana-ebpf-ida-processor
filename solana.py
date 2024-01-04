@@ -46,7 +46,10 @@ class INST_TYPES(object):
     pass
 
 relocations = {}
+functions = {}
 extern_segment = 0x00
+
+STRINGS_PREVIEW_LIMIT = 30
 
 class EBPFProc(processor_t):
     id = 0xeb7f
@@ -102,6 +105,10 @@ class EBPFProc(processor_t):
     # temporary fix for getting the relocation table
     # TODO: figure out, how to do it without loding the binary again
     def ev_newfile(self, fname):
+        for ea, name in Names():
+                print("%x: %s" % (ea, name))
+                functions[name] = ea
+
         with open(fname, 'rb') as f:
             elffile = ELFFile(f)
 
@@ -125,7 +132,20 @@ class EBPFProc(processor_t):
                 if reloc['r_info_type'] == 10:
                     #if func_names[reloc['r_info_sym']].decode() not in ['entrypoint', 'custom_panic']:
                     relocations[reloc['r_offset']] = func_names[reloc['r_info_sym']].decode()
+
         extern_segment = get_last_seg().start_ea
+
+        '''
+        if get_segm_name(extern_segment) == "extern":
+            segment = getseg(extern_segment)
+            seg_ea = segment.start_ea
+            set_segm_attr(seg_ea, SEGATTR_PERM, SEGPERM_READ | SEGPERM_EXEC)
+            set_segm_class(seg_ea, "CODE")
+
+        else:
+            print('extern segment wasn\'t found')
+        '''
+            
         return True
 
     def init_instructions(self):
@@ -463,7 +483,7 @@ class EBPFProc(processor_t):
         # TODO: use FLIRT/whatever to make nice annotations for helper calls, like we get for typical PEs
         if Feature & CF_CALL:
             if insn.ea in relocations:
-                insn.add_cref(extern_segment, insn[0].offb, fl_CN)
+                insn.add_dref(functions[relocations[insn.ea]], insn[0].offb, fl_CN)
             else:
                 insn.add_cref(insn[0].addr, insn[0].offb, fl_CN)
 
@@ -543,8 +563,8 @@ class EBPFProc(processor_t):
                     if seg.sclass == 6: # CONST .rodata
                         try:
                             s = get_strlit_contents(addr, -1, -1).decode()
-                            if len(s) > 20:
-                                s = s[:20] + "..."
+                            if len(s) > STRINGS_PREVIEW_LIMIT:
+                                s = s[:STRINGS_PREVIEW_LIMIT] + "..."
                             s = "\"" + s + "\""
                             ida_bytes.set_cmt(op.addr, s, True)
                             sName = s[1:-1]
@@ -572,7 +592,11 @@ class EBPFProc(processor_t):
 
         elif op.type in [o_near, o_mem]:
             if op.type == o_near and ctx.insn_ea in relocations:
-                ctx.out_printf(relocations[ctx.insn_ea])
+                ok = ctx.out_name_expr(op, functions[relocations[ctx.insn_ea]], BADADDR)
+                if not ok:
+                    ctx.out_tagon(COLOR_ERROR)
+                    ctx.out_long(functions[relocations[ctx.insn_ea]], 16)
+                    ctx.out_tagoff(COLOR_ERROR)
             else:
                 ok = ctx.out_name_expr(op, op.addr, BADADDR)
                 if not ok:
