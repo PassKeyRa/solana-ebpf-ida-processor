@@ -255,18 +255,15 @@ class EBPFProc(processor_t):
     def ev_newfile(self, fname):
         for ea, name in Names():
             name = self._decode_func_name(name)
-            print("%x: %s" % (ea, name))
             self.functions[name] = ea
             set_name(ea, name, SN_CHECK | SN_FORCE) # demangle function names
         
         self.relocations, self.funcs = self._extract_rels_funcs(fname)
 
-        print('\n')
-
-        for r in self.relocations:
-            print('[INFO]', f'{hex(r)}:', self.relocations[r])
-        
-        print('\n')
+        #print('\n')
+        #for r in self.relocations:
+        #    print('[INFO]', f'{hex(r)}:', self.relocations[r])
+        #print('\n')
         
         return True
 
@@ -568,7 +565,7 @@ class EBPFProc(processor_t):
                 else:
                     print('[ERROR] apply relocation: none type')
 
-                print(f'[INFO] patched by offset {hex(mod["offset"])} -> {hex(mod["value"])}')
+                #print(f'[INFO] patched by offset {hex(mod["offset"])} -> {hex(mod["value"])}')
         
         if REL_TYPE[relocation['type']] == 'R_BPF_64_32': # call
             if relocation['mods'][0]['value'] != 0: # internal function call
@@ -600,7 +597,6 @@ class EBPFProc(processor_t):
         if Feature & CF_CALL:
             if insn.ea in self.relocations:
                 self._apply_relocation(insn, self.relocations[insn.ea])
-                #insn.add_dref(self.funcs[self.relocations[insn.ea]['name']], insn[0].offb, fl_CN)
             else:
                 insn.add_cref(insn[0].addr, insn[0].offb, fl_CN)
 
