@@ -9,12 +9,14 @@
 from idaapi import *
 from idc import *
 from idautils import *
-
-import string
+from ida_segment import *
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
-from elftools.elf.sections import StringTableSection
+from elftools.elf.sections import SymbolTableSection
+
+import string
+#import cxxfilt
 
 # BPF ALU defines from uapi/linux/bpf_common.h
 # Mainly using these for disassembling atomic instructions
@@ -45,11 +47,28 @@ class DecodingError(Exception):
 class INST_TYPES(object):
     pass
 
-relocations = {}
-functions = {}
 extern_segment = 0x00
 
 STRINGS_PREVIEW_LIMIT = 30
+
+REL_TYPE = {
+    0: 'R_BPF_NONE',
+    1: 'R_BPF_64_64',
+    2: 'R_BPF_64_ABS64',
+    3: 'R_BPF_64_ABS32',
+    4: 'R_BPF_64_NODYLD32',
+    8: 'R_BPF_64_RELATIVE', # SOLANA SPEC (https://github.com/solana-labs/llvm-project/blob/038d472bcd0b82ff768b515cc77dfb1e3a396ca8/llvm/include/llvm/BinaryFormat/ELFRelocs/BPF.def#L11)
+    10: 'R_BPF_64_32'
+}
+
+REL_PATCH_SIZE = {
+    0: None,
+    1: 32,
+    2: 64,
+    3: 32,
+    4: 32,
+    10: 32
+}
 
 class EBPFProc(processor_t):
     id = 0xeb7f
@@ -102,50 +121,153 @@ class EBPFProc(processor_t):
         self.init_instructions()
         self.init_registers()
 
-    # temporary fix for getting the relocation table
-    # TODO: figure out, how to do it without loding the binary again
-    def ev_newfile(self, fname):
-        for ea, name in Names():
-                print("%x: %s" % (ea, name))
-                functions[name] = ea
+        self.relocations = {}
+        self.functions = {}
+    
+    def _parse_relocation(self, rel_type, loc, val):
+        type_ = REL_TYPE[rel_type]
+        changes = []
+        if type_ == 'R_BPF_64_64':
+            changes.append({'loc': loc + 4, 'val': val & 0xFFFFFFFF})
+            changes.append({'loc': loc + 8 + 4, 'val': val >> 32})
+        elif type_ == 'R_BPF_64_ABS64':
+            changes.append({'loc': loc, 'val': val})
+        elif type_ == 'R_BPF_64_ABS32':
+            pass
+        elif type_ == 'R_BPF_64_NODYLD32':
+            changes.append({'loc': loc, 'val': val & 0xFFFFFFFF})
+        elif type_ == 'R_BPF_64_32':
+            #changes.append[{'loc': loc + 4, 'val': ((val - 8) / 8) & 0xFFFFFFFF}] strange, but that doesn't work
+            changes.append({'loc': loc + 4, 'val': val & 0xFFFFFFFF})
+        elif type_ == 'R_BPF_64_RELATIVE':
+            # ???
+            pass
+        
+        return changes
 
-        with open(fname, 'rb') as f:
+    def _decode_func_name(self, name):
+        name_ = name
+        name = name.replace('.rel.text.','')
+        name = demangle_name(name, INF_SHORT_DN)
+        if not name:
+            return name_
+        
+        # drop hash away
+        name = '::'.join(name.split('::')[:-1])
+
+        # IDA doesn't show these special symbols, which would be quite convenient
+        # Maybe add comments with these names?
+        name = name.replace('___', '.')
+        name = name.replace('__', '::')
+
+        name = name.replace('$u20$', '_')
+        name = name.replace('$LT$', '<')
+        name = name.replace('$GT$', '>')
+        
+        return name
+    
+    def _extract_rels_funcs(self, filename):
+        with open(filename, 'rb') as f:
             elffile = ELFFile(f)
 
-            reldyn_name = '.rel.dyn'
-            reldyn = elffile.get_section_by_name(reldyn_name)
+            sections = []
+            for section in elffile.iter_sections():
+                sections.append(section)
 
-            if not reldyn or not isinstance(reldyn, RelocationSection):
-                # relocations section not found
-                return True
+            relocations = {}
+            functions = {}
+
+            symtab_s = elffile.get_section_by_name('.symtab')
+            symtab = []
+
+            if symtab_s:
+                for sym in symtab_s.iter_symbols():
+                    symtab.append({'name': sym.name, 'val': sym.entry['st_value']})
             
-            dynstr_name = '.dynstr'
-            dynstr = elffile.get_section_by_name(dynstr_name)
+            for s in sections:
+                # dynamic
+                if s.header['sh_type'] == 'SHT_REL' and s.name == '.rel.dyn':
+                    dynsym = elffile.get_section_by_name(".dynsym")
+                    if not dynsym or not isinstance(dynsym, SymbolTableSection):
+                        print("dynsym not found. what?")
+                        continue
+                    
+                    symbols = []
+                    for symbol in dynsym.iter_symbols():
+                        symbols.append({'name': symbol.name, 'val': symbol.entry['st_value']})
+                    
+                    for reloc in s.iter_relocations():
+                        relsym = symbols[reloc['r_info_sym']]
 
-            if not dynstr or not isinstance(dynstr, StringTableSection):
-                # dynstr section not found
-                return True
-            
-            func_names = dynstr.data().split(b'\x00')
-            
-            for reloc in reldyn.iter_relocations():
-                if reloc['r_info_type'] == 10:
-                    #if func_names[reloc['r_info_sym']].decode() not in ['entrypoint', 'custom_panic']:
-                    relocations[reloc['r_offset']] = func_names[reloc['r_info_sym']].decode()
+                        name = self._decode_func_name(relsym['name'])
 
-        extern_segment = get_last_seg().start_ea
+                        reloc_parsed = self._parse_relocation(reloc['r_info_type'], reloc['r_offset'], relsym['val'])
+                        mods = []
 
-        '''
-        if get_segm_name(extern_segment) == "extern":
-            segment = getseg(extern_segment)
-            seg_ea = segment.start_ea
-            set_segm_attr(seg_ea, SEGATTR_PERM, SEGPERM_READ | SEGPERM_EXEC)
-            set_segm_class(seg_ea, "CODE")
+                        for r in reloc_parsed:
+                            mods.append({'offset': get_fileregion_ea(r['loc']), 'value': r['val']})
+                        
+                        relocation = {
+                            'type': reloc['r_info_type'],
+                            'name': name,
+                            'mods': mods
+                        }
 
-        else:
-            print('extern segment wasn\'t found')
-        '''
-            
+                        relocations[get_fileregion_ea(reloc['r_offset'])] = relocation
+                        
+                    continue
+
+                if s.header['sh_type'] == 'SHT_REL':
+                    if not symtab_s:
+                        print("symtab section not found. what?")
+                        continue
+
+                    code_s = sections[s.header['sh_info']]
+                    base_offset = code_s.header['sh_offset']
+
+                    func_name = ''
+
+                    if s.name.startswith('.rel.text.'):
+                        func_name = self._decode_func_name(s.name)
+                        functions[func_name] = base_offset
+
+                    for reloc in s.iter_relocations():
+                        relsym = symtab[reloc['r_info_sym']]
+
+                        name = self._decode_func_name(relsym['name'])
+
+                        reloc_parsed = self._parse_relocation(reloc['r_info_type'], reloc['r_offset'], relsym['val'])
+                        mods = []
+
+                        for r in reloc_parsed:
+                            mods.append({'offset': get_fileregion_ea(base_offset + r['loc']), 'value': r['val']})
+                        
+                        relocation = {
+                            'type': reloc['r_info_type'],
+                            'name': name,
+                            'mods': mods
+                        }
+
+                        relocations[get_fileregion_ea(base_offset + reloc['r_offset'])] = relocation
+
+            return relocations, functions
+
+    def ev_newfile(self, fname):
+        for ea, name in Names():
+            name = self._decode_func_name(name)
+            print("%x: %s" % (ea, name))
+            self.functions[name] = ea
+            set_name(ea, name, SN_CHECK | SN_FORCE) # demangle function names
+        
+        self.relocations, self.funcs = self._extract_rels_funcs(fname)
+
+        print('\n')
+
+        for r in self.relocations:
+            print('[INFO]', f'{hex(r)}:', self.relocations[r])
+        
+        print('\n')
+        
         return True
 
     def init_instructions(self):
@@ -193,23 +315,6 @@ class EBPFProc(processor_t):
             # special-case quad-word load
             0x18:('lddw', self._ana_reg_imm, CF_USE1|CF_USE2),
 
-            # Direct skb access loads (skb implied). Legacy cBPF, but we should still disassemble correctly
-            # linux kernel disassembles this like "r0 = *(u32 *)skb[26]"
-            # Here, r0 is the hardcoded destination and no source register is used. The immediate
-            # determines the offset into the skb
-            # SOLANA SPECIFIC CHANGES
-            #0x20:('ldaw', self._ana_phrase_imm, CF_USE1|CF_USE2),
-            #0x28:('ldah', self._ana_phrase_imm, CF_USE1|CF_USE2),
-            #0x30:('ldab', self._ana_phrase_imm, CF_USE1|CF_USE2),
-            #0x38:('ldadw', self._ana_phrase_imm, CF_USE1|CF_USE2),
-
-            # indirect loads are basically in the same boat as the absolute loads above
-            # SOLANA SPECIFIC CHANGES
-            #0x40:('ldinw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            #0x48:('ldinh', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            #0x50:('ldinb', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            #0x58:('ldindw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-
             0x61:('ldxw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
             0x69:('ldxh', self._ana_reg_regdisp, CF_USE1|CF_USE2),
             0x71:('ldxb', self._ana_reg_regdisp, CF_USE1|CF_USE2),
@@ -224,15 +329,6 @@ class EBPFProc(processor_t):
             0x7b:('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
 
             # LOCK instructions
-            # These are handled a bit differently than typical instructions, see
-            # how the linux kernel disassembles the atomic instructions here
-            # https://elixir.bootlin.com/linux/v5.13.4/source/kernel/bpf/disasm.c#L163
-            # 0xdb: BPF_STX class, BPF_DW size, BPF_ATOMIC mode (imm indicates op type)
-            # The actual operation is in the immediate, so we need to analyze this
-            # to unpack the immediate into a 'virtual' 3rd operand, but this virtual
-            # 3rd operand isn't directly printed. We inspect it in the output phase specifically for
-            # these lock instructions to detemine which operation to print as
-            # an optional suffix with the mnemonic
             0xc3:('lock', self._ana_regdisp_reg_atomic, CF_USE1|CF_USE2),
             0xdb:('lock', self._ana_regdisp_reg_atomic, CF_USE1|CF_USE2),
 
@@ -351,7 +447,7 @@ class EBPFProc(processor_t):
         insn[0].value = self.imm
         insn[0].dtype = dt_dword
 
-        if insn.ea in relocations:
+        if insn.ea in self.relocations:
             insn[0].addr = BADADDR
             return
 
@@ -459,6 +555,26 @@ class EBPFProc(processor_t):
         insn[1].type = o_phrase
         insn[1].dtype = dt_dword
         insn[1].value = self.imm
+    
+    
+    def _apply_relocation(self, insn, relocation):
+        patch_size = REL_PATCH_SIZE[relocation['type']]
+        for mod in relocation['mods']:
+            if mod['value'] != 0:
+                if patch_size == 32:
+                    patch_dword(mod['offset'], mod['value'])
+                elif patch_size == 64:
+                    patch_qword(mod['offset'], mod['value'])
+                else:
+                    print('[ERROR] apply relocation: none type')
+
+                print(f'[INFO] patched by offset {hex(mod["offset"])} -> {hex(mod["value"])}')
+        
+        if REL_TYPE[relocation['type']] == 'R_BPF_64_32': # call
+            if relocation['mods'][0]['value'] != 0: # internal function call
+                insn.add_cref(relocation['mods'][0]['value'], insn[0].offb, fl_CN)
+            else:
+                insn.add_dref(self.functions[relocation['name']], insn[0].offb, fl_CN)
 
 
     def ev_emu_insn(self, insn):
@@ -482,8 +598,9 @@ class EBPFProc(processor_t):
             
         # TODO: use FLIRT/whatever to make nice annotations for helper calls, like we get for typical PEs
         if Feature & CF_CALL:
-            if insn.ea in relocations:
-                insn.add_dref(functions[relocations[insn.ea]], insn[0].offb, fl_CN)
+            if insn.ea in self.relocations:
+                self._apply_relocation(insn, self.relocations[insn.ea])
+                #insn.add_dref(self.funcs[self.relocations[insn.ea]['name']], insn[0].offb, fl_CN)
             else:
                 insn.add_cref(insn[0].addr, insn[0].offb, fl_CN)
 
@@ -530,7 +647,7 @@ class EBPFProc(processor_t):
                     print("[ev_out_insn] invalid operation type in immediate for atomic instruction")
             else:
                 print("[ev_out_insn] analysis error: 3rd parameter for atomic instruction must be o_imm. debug me!")
-        elif ft & CF_CALL and cmd.ea in relocations and relocations[cmd.ea] not in ["entrypoint", "custom_panic"]:
+        elif ft & CF_CALL and cmd.ea in self.relocations and self.relocations[cmd.ea]['name'].startswith('sol_'):
             ctx.out_custom_mnem("syscall", 15)
         else:
             ctx.out_mnem(15)
@@ -591,11 +708,11 @@ class EBPFProc(processor_t):
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
 
         elif op.type in [o_near, o_mem]:
-            if op.type == o_near and ctx.insn_ea in relocations:
-                ok = ctx.out_name_expr(op, functions[relocations[ctx.insn_ea]], BADADDR)
+            if op.type == o_near and ctx.insn_ea in self.relocations:
+                ok = ctx.out_name_expr(op, self.functions[self.relocations[ctx.insn_ea]['name']], BADADDR)
                 if not ok:
                     ctx.out_tagon(COLOR_ERROR)
-                    ctx.out_long(functions[relocations[ctx.insn_ea]], 16)
+                    ctx.out_long(self.functions[self.relocations[ctx.insn_ea]['name']], 16)
                     ctx.out_tagoff(COLOR_ERROR)
             else:
                 ok = ctx.out_name_expr(op, op.addr, BADADDR)
