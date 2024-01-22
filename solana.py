@@ -82,7 +82,7 @@ class EBPFProc(processor_t):
     assembler = {
         'flag':  ASH_HEXF3 | AS_UNEQU | AS_COLON | ASB_BINF4 | AS_N2CHR,
         "uflag": 0,
-        "name": "wut",
+        "name": "eBPF",
         "origin": ".org",
         "end": ".end",
         "cmnt": ";",
@@ -153,7 +153,8 @@ class EBPFProc(processor_t):
             return name_
         
         # drop hash away
-        name = '::'.join(name.split('::')[:-1])
+        if '::' in name:
+            name = '::'.join(name.split('::')[:-1])
 
         # IDA doesn't show these special symbols, which would be quite convenient
         # Maybe add comments with these names?
