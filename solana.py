@@ -14,7 +14,9 @@ from ida_segment import *
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
+from rust_demangler.rust import TypeNotFoundError
 
+import rust_demangler
 import string
 #import cxxfilt
 
@@ -146,25 +148,7 @@ class EBPFProc(processor_t):
         return changes
 
     def _decode_func_name(self, name):
-        name_ = name
         name = name.replace('.rel.text.','')
-        name = demangle_name(name, INF_SHORT_DN)
-        if not name:
-            return name_
-        
-        # drop hash away
-        if '::' in name:
-            name = '::'.join(name.split('::')[:-1])
-
-        # IDA doesn't show these special symbols, which would be quite convenient
-        # Maybe add comments with these names?
-        name = name.replace('___', '.')
-        name = name.replace('__', '::')
-
-        name = name.replace('$u20$', '_')
-        name = name.replace('$LT$', '<')
-        name = name.replace('$GT$', '>')
-        
         return name
     
     def _extract_rels_funcs(self, filename):
@@ -252,12 +236,23 @@ class EBPFProc(processor_t):
                         relocations[get_fileregion_ea(base_offset + reloc['r_offset'])] = relocation
 
             return relocations, functions
+    
+    # callback from demangle_name
+    # since the default demangler in IDA takes C++ names,
+    # here we replace it with rust_demangler
+    # returns: [res_from_ev_demangle_name, outbuffer, res_from_demangle_name]
+    def ev_demangle_name(self, name, disable_mask, demreq):
+        try:
+            return [1, rust_demangler.demangle(name), 1] # use rust demangler
+        except Exception as e:
+            print(e)
+            return [1, name, 1]
 
     def ev_newfile(self, fname):
         for ea, name in Names():
             name = self._decode_func_name(name)
             self.functions[name] = ea
-            set_name(ea, name, SN_CHECK | SN_FORCE) # demangle function names
+            set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
         
         self.relocations, self.funcs = self._extract_rels_funcs(fname)
 
