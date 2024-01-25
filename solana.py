@@ -69,11 +69,12 @@ REL_PATCH_SIZE = {
     2: 64,
     3: 32,
     4: 32,
+    8: 32,
     10: 32
 }
 
 class EBPFProc(processor_t):
-    id = 0xeb7f
+    id = 247
     flag = PR_ASSEMBLE | PR_SEGS | PR_DEFSEG32 | PR_USE32 | PRN_HEX | PR_RNAMESOK | PR_NO_SEGMOVE
     cnbits = 8
     dnbits = 8
@@ -147,11 +148,12 @@ class EBPFProc(processor_t):
         
         return changes
 
-    def _decode_func_name(self, name):
+    def _decode_name(self, name):
         name = name.replace('.rel.text.','')
+        name = name.replace('.rel.data.rel.ro.','')
         return name
     
-    def _extract_rels_funcs(self, filename):
+    def _extract_rels_funcs_rodata(self, filename):
         with open(filename, 'rb') as f:
             elffile = ELFFile(f)
 
@@ -161,6 +163,7 @@ class EBPFProc(processor_t):
 
             relocations = {}
             functions = {}
+            rodata = {}
 
             symtab_s = elffile.get_section_by_name('.symtab')
             symtab = []
@@ -184,13 +187,13 @@ class EBPFProc(processor_t):
                     for reloc in s.iter_relocations():
                         relsym = symbols[reloc['r_info_sym']]
 
-                        name = self._decode_func_name(relsym['name'])
+                        name = self._decode_name(relsym['name'])
 
                         reloc_parsed = self._parse_relocation(reloc['r_info_type'], reloc['r_offset'], relsym['val'])
                         mods = []
 
                         for r in reloc_parsed:
-                            mods.append({'offset': get_fileregion_ea(r['loc']), 'value': r['val']})
+                            mods.append({'loc': get_fileregion_ea(r['loc']), 'val': r['val']})
                         
                         relocation = {
                             'type': reloc['r_info_type'],
@@ -210,22 +213,23 @@ class EBPFProc(processor_t):
                     code_s = sections[s.header['sh_info']]
                     base_offset = code_s.header['sh_offset']
 
-                    func_name = ''
-
+                    section_name = self._decode_name(s.name)
+                    ea_addr = get_fileregion_ea(base_offset)
                     if s.name.startswith('.rel.text.'):
-                        func_name = self._decode_func_name(s.name)
-                        functions[func_name] = base_offset
+                        functions[section_name] = ea_addr
+                    elif s.name.startswith('.rel.data.rel.ro.'):
+                        rodata[section_name] = ea_addr
 
                     for reloc in s.iter_relocations():
                         relsym = symtab[reloc['r_info_sym']]
 
-                        name = self._decode_func_name(relsym['name'])
+                        name = self._decode_name(relsym['name'])
 
                         reloc_parsed = self._parse_relocation(reloc['r_info_type'], reloc['r_offset'], relsym['val'])
                         mods = []
 
                         for r in reloc_parsed:
-                            mods.append({'offset': get_fileregion_ea(base_offset + r['loc']), 'value': r['val']})
+                            mods.append({'loc': get_fileregion_ea(base_offset + r['loc']), 'val': r['val']})
                         
                         relocation = {
                             'type': reloc['r_info_type'],
@@ -235,7 +239,7 @@ class EBPFProc(processor_t):
 
                         relocations[get_fileregion_ea(base_offset + reloc['r_offset'])] = relocation
 
-            return relocations, functions
+            return relocations, functions, rodata
     
     # callback from demangle_name
     # since the default demangler in IDA takes C++ names,
@@ -245,16 +249,16 @@ class EBPFProc(processor_t):
         try:
             return [1, rust_demangler.demangle(name), 1] # use rust demangler
         except Exception as e:
-            print(e)
+            #print(e)
             return [1, name, 1]
 
     def ev_newfile(self, fname):
         for ea, name in Names():
-            name = self._decode_func_name(name)
+            name = self._decode_name(name)
             self.functions[name] = ea
             set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
         
-        self.relocations, self.funcs = self._extract_rels_funcs(fname)
+        self.relocations, self.funcs, self.rodata = self._extract_rels_funcs_rodata(fname)
 
         #print('\n')
         #for r in self.relocations:
@@ -549,25 +553,36 @@ class EBPFProc(processor_t):
         insn[1].dtype = dt_dword
         insn[1].value = self.imm
     
-    
-    def _apply_relocation(self, insn, relocation):
-        patch_size = REL_PATCH_SIZE[relocation['type']]
-        for mod in relocation['mods']:
-            if mod['value'] != 0:
+    def _apply_rel_mods(self, mods, patch_size):
+        for mod in mods:
+            if mod['val'] != 0:
                 if patch_size == 32:
-                    patch_dword(mod['offset'], mod['value'])
+                    patch_dword(mod['loc'], mod['val'])
                 elif patch_size == 64:
-                    patch_qword(mod['offset'], mod['value'])
+                    patch_qword(mod['loc'], mod['val'])
                 else:
                     print('[ERROR] apply relocation: none type')
-
-                #print(f'[INFO] patched by offset {hex(mod["offset"])} -> {hex(mod["value"])}')
+                #print(f'[INFO] patched by offset {hex(mod["loc"])} -> {hex(mod["val"])}')
+    
+    def _apply_relocation(self, insn, relocation):
+        if relocation['type'] == 8:
+            print('R_BPF_RELATIVE', hex(insn.ea), relocation['name'])
+        patch_size = REL_PATCH_SIZE[relocation['type']]
+        self._apply_rel_mods(relocation['mods'], patch_size)
         
         if REL_TYPE[relocation['type']] == 'R_BPF_64_32': # call
-            if relocation['mods'][0]['value'] != 0: # internal function call
-                insn.add_cref(relocation['mods'][0]['value'], insn[0].offb, fl_CN)
+            if relocation['mods'][0]['val'] != 0: # internal function call
+                insn.add_cref(relocation['mods'][0]['val'], insn[0].offb, fl_CN)
             else:
                 insn.add_dref(self.functions[relocation['name']], insn[0].offb, fl_CN)
+        
+        if REL_TYPE[relocation['type']] == 'R_BPF_64_64': # lddw
+            if relocation['name'] in self.rodata:
+                data_addr = self.rodata[relocation['name']]
+                mods = self._parse_relocation(relocation['type'], insn.ea, data_addr)
+                self._apply_rel_mods(mods, patch_size)
+                insn.add_dref(data_addr, insn[1].offb, dr_R)
+                print('R_BPF_64_64', hex(insn.ea), data_addr, relocation['name'])
 
 
     def ev_emu_insn(self, insn):
@@ -588,6 +603,10 @@ class EBPFProc(processor_t):
                 #insn.create_stkvar(insn[op_ind], insn[op_ind].value, STKVAR_VALID_SIZE)
                 #op_stkvar(insn.ea, op_ind)
                 pass
+        
+        if insn[1].type == o_imm and insn[1].dtype == dt_qword:
+            if insn.ea in self.relocations:
+                self._apply_relocation(insn, self.relocations[insn.ea])
             
         # TODO: use FLIRT/whatever to make nice annotations for helper calls, like we get for typical PEs
         if Feature & CF_CALL:
@@ -683,10 +702,11 @@ class EBPFProc(processor_t):
                             for i in sName:
                                 if i in string.ascii_letters:
                                     sName_ += i
-                            set_name(addr, sName_, SN_NOCHECK|SN_NOWARN|SN_FORCE)
+                            set_name(addr, sName_, SN_FORCE)
                             add_dref(ctx.insn_ea, addr, dr_R)
                             isString = True
-                        except:
+                        except Exception as e:
+                            print(e)
                             pass
 
                 if isString:

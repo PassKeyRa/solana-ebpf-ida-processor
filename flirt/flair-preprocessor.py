@@ -18,6 +18,7 @@ REL_PATCH_SIZE = {
     2: 64,
     3: 32,
     4: 32,
+    8: 32,
     10: 32
 }
 
@@ -73,7 +74,8 @@ def map_rels_to_funcs(elffile):
                         relocation = {
                             'type': reloc['r_info_type'],
                             'name': relsym['name'],
-                            'offset': reloc['r_offset']
+                            'offset': reloc['r_offset'],
+                            'value': relsym['val']
                         }
 
                         relocations[func_name]['internal'].append(relocation)
@@ -141,6 +143,7 @@ def crc16(data, crc):
 
 def process_function(libdata, fname, fdata):
     print('[FUNCTION]', fname, 'size', fdata['func_size'])
+    #print('[RELOCATIONS]', fdata['internal'])
     fbytes = libdata[fdata['offset'] : fdata['offset'] + fdata['func_size']]
 
     if len(fbytes) >= 0x8000:
@@ -163,6 +166,8 @@ def process_function(libdata, fname, fdata):
         
         if REL_TYPE[reloc['type']] == 'R_BPF_64_32':
             internal_names[hex(mods[0]['loc'])[2:].upper().zfill(4)] = reloc['name']
+        elif REL_TYPE[reloc['type']] == 'R_BPF_64_64':
+            internal_names[hex(mods[0]['loc'])[2:].upper().zfill(4)] = reloc['name'] # only first mod
 
     # Replace remaining unrelocated calls if any (shouldn't be)
     fhex = fhex.replace('85100000FFFFFFFF', '..' * 8)
@@ -204,6 +209,7 @@ def process_library(libfile):
         pat_data_ = process_function(libdata, f, functions[f])
         if pat_data_ != None:
             pat_funcs.append(pat_data_)
+        #print()
 
     return '\n'.join(pat_funcs) + '\n---\n'
 
