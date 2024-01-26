@@ -73,6 +73,141 @@ REL_PATCH_SIZE = {
     10: 32
 }
 
+# Three least significant bits are operation class:
+## BPF operation class: load from immediate. [DEPRECATED]
+BPF_LD = 0x00
+## BPF operation class: load from register.
+BPF_LDX = 0x01
+## BPF operation class: store immediate.
+BPF_ST = 0x02
+## BPF operation class: store value from register.
+BPF_STX = 0x03
+## BPF operation class: 32 bits arithmetic operation.
+BPF_ALU = 0x04
+## BPF operation class: jump.
+BPF_JMP = 0x05
+## BPF operation class: product / quotient / remainder.
+BPF_PQR = 0x06
+## BPF operation class: 64 bits arithmetic operation.
+BPF_ALU64 = 0x07
+
+# Size modifiers:
+## BPF size modifier: word (4 bytes).
+BPF_W = 0x00
+## BPF size modifier: half-word (2 bytes).
+BPF_H = 0x08
+## BPF size modifier: byte (1 byte).
+BPF_B = 0x10
+## BPF size modifier: double word (8 bytes).
+BPF_DW = 0x18
+
+# Mode modifiers:
+## BPF mode modifier: immediate value.
+BPF_IMM = 0x00
+## BPF mode modifier: absolute load.
+BPF_ABS = 0x20
+## BPF mode modifier: indirect load.
+BPF_IND = 0x40
+## BPF mode modifier: load from / store to memory.
+BPF_MEM = 0x60
+# [ 0x80 reserved ]
+# [ 0xa0 reserved ]
+# [ 0xc0 reserved ]
+
+# For arithmetic (BPF_ALU/BPF_ALU64) and jump (BPF_JMP) instructions:
+# +----------------+--------+--------+
+# |     4 bits     |1 b.|   3 bits   |
+# | operation code | src| insn class |
+# +----------------+----+------------+
+# (MSB)                          (LSB)
+
+# Source modifiers:
+## BPF source operand modifier: 32-bit immediate value.
+BPF_K = 0x00
+## BPF source operand modifier: `src` register.
+BPF_X = 0x08
+
+# Operation codes -- BPF_ALU or BPF_ALU64 classes:
+## BPF ALU/ALU64 operation code: addition.
+BPF_ADD = 0x00
+## BPF ALU/ALU64 operation code: subtraction.
+BPF_SUB = 0x10
+## BPF ALU/ALU64 operation code: multiplication. [DEPRECATED]
+BPF_MUL = 0x20
+## BPF ALU/ALU64 operation code: division. [DEPRECATED]
+BPF_DIV = 0x30
+## BPF ALU/ALU64 operation code: or.
+BPF_OR = 0x40
+## BPF ALU/ALU64 operation code: and.
+BPF_AND = 0x50
+## BPF ALU/ALU64 operation code: left shift.
+BPF_LSH = 0x60
+## BPF ALU/ALU64 operation code: right shift.
+BPF_RSH = 0x70
+## BPF ALU/ALU64 operation code: negation. [DEPRECATED]
+BPF_NEG = 0x80
+## BPF ALU/ALU64 operation code: modulus. [DEPRECATED]
+BPF_MOD = 0x90
+## BPF ALU/ALU64 operation code: exclusive or.
+BPF_XOR = 0xa0
+## BPF ALU/ALU64 operation code: move.
+BPF_MOV = 0xb0
+## BPF ALU/ALU64 operation code: sign extending right shift.
+BPF_ARSH = 0xc0
+## BPF ALU/ALU64 operation code: endianness conversion.
+BPF_END = 0xd0
+## BPF ALU/ALU64 operation code: high or.
+BPF_HOR = 0xf0
+
+# Operation codes -- BPF_PQR class:
+#    7         6               5                               4       3          2-0
+# 0  Unsigned  Multiplication  Product Lower Half / Quotient   32 Bit  Immediate  PQR
+# 1  Signed    Division        Product Upper Half / Remainder  64 Bit  Register   PQR
+## BPF PQR operation code: unsigned high multiplication.
+BPF_UHMUL = 0x20
+## BPF PQR operation code: unsigned division quotient.
+BPF_UDIV = 0x40
+## BPF PQR operation code: unsigned division remainder.
+BPF_UREM = 0x60
+## BPF PQR operation code: low multiplication.
+BPF_LMUL = 0x80
+## BPF PQR operation code: signed high multiplication.
+BPF_SHMUL = 0xA0
+## BPF PQR operation code: signed division quotient.
+BPF_SDIV = 0xC0
+## BPF PQR operation code: signed division remainder.
+BPF_SREM = 0xE0
+
+# Operation codes -- BPF_JMP class:
+## BPF JMP operation code: jump.
+BPF_JA = 0x00
+## BPF JMP operation code: jump if equal.
+BPF_JEQ = 0x10
+## BPF JMP operation code: jump if greater than.
+BPF_JGT = 0x20
+## BPF JMP operation code: jump if greater or equal.
+BPF_JGE = 0x30
+## BPF JMP operation code: jump if `src` & `reg`.
+BPF_JSET = 0x40
+## BPF JMP operation code: jump if not equal.
+BPF_JNE = 0x50
+## BPF JMP operation code: jump if greater than (signed).
+BPF_JSGT = 0x60
+## BPF JMP operation code: jump if greater or equal (signed).
+BPF_JSGE = 0x70
+## BPF JMP operation code: syscall function call.
+BPF_CALL = 0x80
+## BPF JMP operation code: return from program.
+BPF_EXIT = 0x90
+## BPF JMP operation code: jump if lower than.
+BPF_JLT = 0xa0
+## BPF JMP operation code: jump if lower or equal.
+BPF_JLE = 0xb0
+## BPF JMP operation code: jump if lower than (signed).
+BPF_JSLT = 0xc0
+## BPF JMP operation code: jump if lower or equal (signed).
+BPF_JSLE = 0xd0
+
 class EBPFProc(processor_t):
     id = 247
     flag = PR_ASSEMBLE | PR_SEGS | PR_DEFSEG32 | PR_USE32 | PRN_HEX | PR_RNAMESOK | PR_NO_SEGMOVE
@@ -268,93 +403,143 @@ class EBPFProc(processor_t):
         return True
 
     def init_instructions(self):
-        # there is a logic behind the opcode values but I chose to ignore it
+        # https://github.com/solana-labs/rbpf/blob/main/src/ebpf.rs#L61
+
         self.OPCODES = {
-            # ALU
-            0x07:('add', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            0x0f:('add', self._ana_2regs, CF_USE1|CF_USE2),
-            0x17:('sub', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            0x1f:('sub', self._ana_2regs, CF_USE1|CF_USE2),
-            0x27:('mul', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x2f:('mul', self._ana_2regs, CF_USE1|CF_USE2),
-            0x37:('div', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x3f:('div', self._ana_2regs, CF_USE1|CF_USE2),
-            0x47:('or', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x4f:('or', self._ana_2regs, CF_USE1|CF_USE2),
-            0x57:('and', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x5f:('and', self._ana_2regs, CF_USE1|CF_USE2),
-            0x67:('lsh', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x6f:('lsh', self._ana_2regs, CF_USE1|CF_USE2),
-            0x77:('rsh', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x7f:('rsh', self._ana_2regs, CF_USE1|CF_USE2),
-            0x87:('neg', self._ana_1reg, CF_USE1|CF_USE2),
-            0x97:('mod', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0x9f:('mod', self._ana_2regs, CF_USE1|CF_USE2),
-            0xa7:('xor', self._ana_reg_imm, CF_USE1|CF_USE2),
-            0xaf:('xor', self._ana_2regs, CF_USE1|CF_USE2),
-            0xb7:('mov', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            0xbf:('mov', self._ana_2regs, CF_USE1 | CF_USE2),
-            0xc7:('arsh', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            0xcf:('arsh', self._ana_2regs, CF_USE1 | CF_USE2),
-
-            # TODO: ALU 32 bit opcodes
-
-            # Byteswap Instructions
-            # 1 register operand (destination), 1 immediate.
-            # imm == 16 | 32 | 64, indicating width
-            # TODO: output the proper mnemonic w/ optional suffix based on the immediate operand.
-            #     what should happen is that the immediate operand is used as the decimal
-            #     width modifier to produce 'be16', 'be32', etc.
-            0xd4:('le', self._ana_reg_imm, CF_USE1),
-            0xdc:('be', self._ana_reg_imm, CF_USE1),
-
             # MEM
-            # special-case quad-word load
-            0x18:('lddw', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_LD | BPF_IMM | BPF_DW: ('lddw', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_LDX | BPF_MEM | BPF_W: ('ldxw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
+            BPF_LDX | BPF_MEM | BPF_H: ('ldxh', self._ana_reg_regdisp, CF_USE1|CF_USE2),
+            BPF_LDX | BPF_MEM | BPF_B: ('ldxb', self._ana_reg_regdisp, CF_USE1|CF_USE2),
+            BPF_LDX | BPF_MEM | BPF_DW: ('ldxdw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
+            BPF_ST | BPF_MEM | BPF_W: ('stw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_ST | BPF_MEM | BPF_H: ('sth', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_ST | BPF_MEM | BPF_B: ('stb', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_ST | BPF_MEM | BPF_DW: ('stdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_STX | BPF_MEM | BPF_W: ('stxw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_STX | BPF_MEM | BPF_H: ('stxh', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_STX | BPF_MEM | BPF_B: ('stxb', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_STX | BPF_MEM | BPF_DW: ('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
 
-            0x61:('ldxw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            0x69:('ldxh', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            0x71:('ldxb', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            0x79:('ldxdw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            0x62:('stw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x6a:('sth', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x72:('stb', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x7a:('stdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x63:('stxw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x6b:('stxh', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x73:('stxb', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            0x7b:('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            # ALU 32
+            BPF_ALU | BPF_K | BPF_ADD: ('add32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU | BPF_X | BPF_ADD: ('add32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_SUB: ('sub32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU | BPF_X | BPF_SUB: ('sub32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_MUL: ('mul32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_MUL: ('mul32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_DIV: ('div32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_DIV: ('div32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_OR: ('or32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_OR: ('or32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_AND: ('and32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_AND: ('and32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_LSH: ('lsh32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_LSH: ('lsh32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_RSH: ('rsh32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_RSH: ('rsh32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_NEG: ('neg32', self._ana_1reg, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_MOD: ('mod32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_MOD: ('mod32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_XOR: ('xor32', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_X | BPF_XOR: ('xor32', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU | BPF_K | BPF_MOV: ('mov32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU | BPF_X | BPF_MOV: ('mov32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_ALU | BPF_K | BPF_ARSH: ('arsh32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU | BPF_X | BPF_ARSH: ('arsh32', self._ana_2regs, CF_USE1 | CF_USE2),
 
-            # LOCK instructions
-            0xc3:('lock', self._ana_regdisp_reg_atomic, CF_USE1|CF_USE2),
-            0xdb:('lock', self._ana_regdisp_reg_atomic, CF_USE1|CF_USE2),
+            BPF_PQR | BPF_K | BPF_LMUL: ('lmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_X | BPF_LMUL: ('lmul32', self._ana_2regs, CF_USE1 | CF_USE2),
+            # BPF_PQR | BPF_K | BPF_UHMUL: ('uhmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            # BPF_PQR | BPF_X | BPF_UHMUL: ('uhmul32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_UDIV: ('udiv32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_X | BPF_UDIV: ('udiv32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_UREM: ('urem32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_X | BPF_UREM: ('urem32', self._ana_2regs, CF_USE1 | CF_USE2),
+            # BPF_PQR | BPF_K | BPF_SHMUL: ('shmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            # BPF_PQR | BPF_X | BPF_SHMUL: ('shmul32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_SDIV: ('sdiv32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_X | BPF_SDIV: ('sdiv32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_SREM: ('srem32', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_X | BPF_SREM: ('srem32', self._ana_2regs, CF_USE1 | CF_USE2),
+
+
+            BPF_ALU | BPF_K | BPF_END: ('le', self._ana_reg_imm, CF_USE1),
+            BPF_ALU | BPF_X | BPF_END: ('be', self._ana_reg_imm, CF_USE1),
+
+            # ALU 64
+            BPF_ALU64 | BPF_K | BPF_ADD: ('add64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_ADD: ('add64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_SUB: ('sub64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_SUB: ('sub64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_MUL: ('mul64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_MUL: ('mul64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_DIV: ('div64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_DIV: ('div64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_OR: ('or64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_OR: ('or64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_AND: ('and64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_AND: ('and64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_LSH: ('lsh64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_LSH: ('lsh64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_RSH: ('rsh64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_RSH: ('rsh64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_NEG: ('neg64', self._ana_1reg, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_MOD: ('mod64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_MOD: ('mod64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_XOR: ('xor64', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_XOR: ('xor64', self._ana_2regs, CF_USE1|CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_MOV: ('mov64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_MOV: ('mov64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_ARSH: ('arsh64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_ALU64 | BPF_X | BPF_ARSH: ('arsh64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_ALU64 | BPF_K | BPF_HOR: ('hor64', self._ana_reg_imm, CF_USE1 | CF_USE2), # new, SOLANA SPEC?
+
+            BPF_PQR | BPF_B | BPF_K | BPF_LMUL: ('lmul64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_LMUL: ('lmul64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_UHMUL: ('uhmul64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_UHMUL: ('uhmul64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_UDIV: ('udiv64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_UDIV: ('udiv64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_UREM: ('urem64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_UREM: ('urem64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_SHMUL: ('shmul64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_SHMUL: ('shmul64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_SDIV: ('sdiv64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_SDIV: ('sdiv64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_SREM: ('srem64', self._ana_reg_imm, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_X | BPF_SREM: ('srem64', self._ana_2regs, CF_USE1 | CF_USE2),
+
 
             # BRANCHES
-            0x05:('ja', self._ana_jmp, CF_USE1|CF_JUMP),
-            0x15:('jeq', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x1d:('jeq', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x25:('jgt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x2d:('jgt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x35:('jge', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x3d:('jge', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x45:('jset', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x4d:('jset', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x55:('jne', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x5d:('jne', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x65:('jsgt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x6d:('jsgt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x75:('jsge', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0x7d:('jsge', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_JA: ('ja', self._ana_jmp, CF_USE1|CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JEQ: ('jeq', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JEQ: ('jeq', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JGT: ('jgt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JGT: ('jgt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JGE: ('jge', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JGE: ('jge', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JLT: ('jlt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JLT: ('jlt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JLE: ('jle', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP), # new
+            BPF_JMP | BPF_X | BPF_JLE: ('jle', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP), # new
+            BPF_JMP | BPF_K | BPF_JSET: ('jset', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JSET: ('jset', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JNE: ('jne', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JNE: ('jne', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
 
-            0xa5:('jlt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            0xad:('jlt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
-            # TODO: do we have to add any extra info here to handle differences with signed/unsigned conditional jumps?
-            0xc5:('jslt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JSGT: ('jsgt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JSGT: ('jsgt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_K | BPF_JSGE: ('jsge', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JSGE: ('jsge', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),            
+            BPF_JMP | BPF_K | BPF_JSLT: ('jslt', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
+            BPF_JMP | BPF_X | BPF_JSLT: ('jslt', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP), # new
+            BPF_JMP | BPF_K | BPF_JSLE: ('jsle', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP), # new
+            BPF_JMP | BPF_X | BPF_JSLE: ('jsle', self._ana_cond_jmp_reg_reg, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP), # new
 
-            0x85:('call', self._ana_call, CF_USE1|CF_CALL),            
-            0x8d:('callx', self._ana_callx, CF_USE1|CF_CALL),
-
-            0x95:('ret', self._ana_nop, CF_STOP)
+            BPF_JMP | BPF_CALL: ('call', self._ana_call, CF_USE1|CF_CALL), # call imm
+            BPF_JMP | BPF_X | BPF_CALL: ('callx', self._ana_callx, CF_USE1|CF_CALL), # tail call
+            BPF_JMP | BPF_EXIT: ('exit', self._ana_nop, CF_STOP) # return r0
         }
         
         Instructions = [{'name':x[0], 'feature':x[2]} for x in self.OPCODES.values()]

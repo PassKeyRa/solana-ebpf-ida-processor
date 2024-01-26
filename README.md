@@ -37,6 +37,7 @@ sigmake -nSolanaEBPF *.pat solana.sig
 ## TODO
 
 * Collect libraries and generate more signatures
+* Figure out how relative imports work in solana and implement it
 * Come up with more improvements for better bytecode readability
 
 ## Thanks
