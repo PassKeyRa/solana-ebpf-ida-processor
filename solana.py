@@ -403,7 +403,7 @@ class EBPFProc(processor_t):
         return True
 
     def init_instructions(self):
-        # https://github.com/solana-labs/rbpf/blob/main/src/ebpf.rs#L61
+        # https://github.com/solana-labs/rbpf/blob/179a0f94b68ae0bef892b214750a54448d61b1be/src/ebpf.rs#L205
 
         self.OPCODES = {
             # MEM
@@ -576,7 +576,7 @@ class EBPFProc(processor_t):
             
         self.imm = insn.get_next_dword()
         
-        if self.opcode == 0x18:
+        if self.opcode == BPF_LD | BPF_IMM | BPF_DW:
             insn.get_next_dword()
             imm2 = insn.get_next_dword()
             self.imm += imm2 << 32
@@ -600,7 +600,7 @@ class EBPFProc(processor_t):
 
         insn[1].type = o_imm
         # special quad-word load
-        if self.opcode == 0x18:
+        if self.opcode == BPF_LD | BPF_IMM | BPF_DW:
             insn[1].dtype = dt_qword
         else:
             insn[1].dtype = dt_dword
@@ -689,7 +689,6 @@ class EBPFProc(processor_t):
         insn[2].dtype = dt_dword
 
     def _ana_regdisp_reg(self, insn):
-
         insn[0].type = o_displ
         insn[0].dtype = dt_word
         insn[0].value = self.off
@@ -751,7 +750,8 @@ class EBPFProc(processor_t):
     
     def _apply_relocation(self, insn, relocation):
         if relocation['type'] == 8:
-            print('R_BPF_RELATIVE', hex(insn.ea), relocation['name'])
+            #print('R_BPF_RELATIVE', hex(insn.ea), relocation['name'])
+            pass
         patch_size = REL_PATCH_SIZE[relocation['type']]
         self._apply_rel_mods(relocation['mods'], patch_size)
         
@@ -778,16 +778,12 @@ class EBPFProc(processor_t):
             insn.add_cref(insn[dst_op_index].addr, insn[dst_op_index].offb, fl_JN)
             remember_problem(cvar.PR_JUMP, insn.ea) # PR_JUMP ignored?
 
-        # TODO: see what stack emulation we need to do when operating on/with r10
         if insn[0].type == o_displ or insn[1].type == o_displ:
             op_ind = 0 if insn[0].type == o_displ else 1
             if may_create_stkvars():
-                # annoying problem: we can properly display 16-bit offsets in the out stage,
-                # but this step gets them highlighted in red as if they were invalid
-                # Disable until we can do this correctly
-                #insn.create_stkvar(insn[op_ind], insn[op_ind].value, STKVAR_VALID_SIZE)
-                #op_stkvar(insn.ea, op_ind)
-                pass
+                val = ctypes.c_int16(insn[op_ind].value).value # create_stkvar takes signed value
+                if insn.create_stkvar(insn[op_ind], val, STKVAR_VALID_SIZE):
+                    op_stkvar(insn.ea, op_ind)
         
         if insn[1].type == o_imm and insn[1].dtype == dt_qword:
             if insn.ea in self.relocations:
