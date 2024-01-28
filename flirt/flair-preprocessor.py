@@ -6,6 +6,8 @@
 # which can be passed to the sigmake tool to generate 
 # the final .sig file
 
+# TODO: read files that contain .debug_* sections
+
 from elftools.elf.elffile import ELFFile
 
 import argparse

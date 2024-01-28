@@ -10,6 +10,7 @@ from idaapi import *
 from idc import *
 from idautils import *
 from ida_segment import *
+from ida_frame import *
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
@@ -407,7 +408,7 @@ class EBPFProc(processor_t):
 
         self.OPCODES = {
             # MEM
-            BPF_LD | BPF_IMM | BPF_DW: ('lddw', self._ana_reg_imm, CF_USE1|CF_USE2),
+            BPF_LD | BPF_IMM | BPF_DW: ('lddw', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
             BPF_LDX | BPF_MEM | BPF_W: ('ldxw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
             BPF_LDX | BPF_MEM | BPF_H: ('ldxh', self._ana_reg_regdisp, CF_USE1|CF_USE2),
             BPF_LDX | BPF_MEM | BPF_B: ('ldxb', self._ana_reg_regdisp, CF_USE1|CF_USE2),
@@ -422,93 +423,93 @@ class EBPFProc(processor_t):
             BPF_STX | BPF_MEM | BPF_DW: ('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
 
             # ALU 32
-            BPF_ALU | BPF_K | BPF_ADD: ('add32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU | BPF_X | BPF_ADD: ('add32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_SUB: ('sub32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU | BPF_X | BPF_SUB: ('sub32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_MUL: ('mul32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_MUL: ('mul32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_DIV: ('div32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_DIV: ('div32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_OR: ('or32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_OR: ('or32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_AND: ('and32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_AND: ('and32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_LSH: ('lsh32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_LSH: ('lsh32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_RSH: ('rsh32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_RSH: ('rsh32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_NEG: ('neg32', self._ana_1reg, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_MOD: ('mod32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_MOD: ('mod32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_XOR: ('xor32', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_X | BPF_XOR: ('xor32', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU | BPF_K | BPF_MOV: ('mov32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU | BPF_X | BPF_MOV: ('mov32', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_ALU | BPF_K | BPF_ARSH: ('arsh32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU | BPF_X | BPF_ARSH: ('arsh32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_ALU | BPF_K | BPF_ADD: ('add32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_ADD: ('add32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_SUB: ('sub32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_SUB: ('sub32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_MUL: ('mul32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_MUL: ('mul32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_DIV: ('div32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_DIV: ('div32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_OR: ('or32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_OR: ('or32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_AND: ('and32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_AND: ('and32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_LSH: ('lsh32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_LSH: ('lsh32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_RSH: ('rsh32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_RSH: ('rsh32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_NEG: ('neg32', self._ana_1reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_MOD: ('mod32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_MOD: ('mod32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_XOR: ('xor32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_XOR: ('xor32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_MOV: ('mov32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_MOV: ('mov32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_ARSH: ('arsh32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_ARSH: ('arsh32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
 
-            BPF_PQR | BPF_K | BPF_LMUL: ('lmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_X | BPF_LMUL: ('lmul32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_LMUL: ('lmul32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_X | BPF_LMUL: ('lmul32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
             # BPF_PQR | BPF_K | BPF_UHMUL: ('uhmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
             # BPF_PQR | BPF_X | BPF_UHMUL: ('uhmul32', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_K | BPF_UDIV: ('udiv32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_X | BPF_UDIV: ('udiv32', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_K | BPF_UREM: ('urem32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_X | BPF_UREM: ('urem32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_UDIV: ('udiv32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_X | BPF_UDIV: ('udiv32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_K | BPF_UREM: ('urem32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_X | BPF_UREM: ('urem32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
             # BPF_PQR | BPF_K | BPF_SHMUL: ('shmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
             # BPF_PQR | BPF_X | BPF_SHMUL: ('shmul32', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_K | BPF_SDIV: ('sdiv32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_X | BPF_SDIV: ('sdiv32', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_K | BPF_SREM: ('srem32', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_X | BPF_SREM: ('srem32', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_K | BPF_SDIV: ('sdiv32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_X | BPF_SDIV: ('sdiv32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_K | BPF_SREM: ('srem32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_X | BPF_SREM: ('srem32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
 
 
-            BPF_ALU | BPF_K | BPF_END: ('le', self._ana_reg_imm, CF_USE1),
-            BPF_ALU | BPF_X | BPF_END: ('be', self._ana_reg_imm, CF_USE1),
+            BPF_ALU | BPF_K | BPF_END: ('le', self._ana_reg_imm, CF_USE1|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_END: ('be', self._ana_reg_imm, CF_USE1|CF_CHG1),
 
             # ALU 64
-            BPF_ALU64 | BPF_K | BPF_ADD: ('add64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_ADD: ('add64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_SUB: ('sub64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_SUB: ('sub64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_MUL: ('mul64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_MUL: ('mul64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_DIV: ('div64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_DIV: ('div64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_OR: ('or64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_OR: ('or64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_AND: ('and64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_AND: ('and64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_LSH: ('lsh64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_LSH: ('lsh64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_RSH: ('rsh64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_RSH: ('rsh64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_NEG: ('neg64', self._ana_1reg, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_MOD: ('mod64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_MOD: ('mod64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_XOR: ('xor64', self._ana_reg_imm, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_XOR: ('xor64', self._ana_2regs, CF_USE1|CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_MOV: ('mov64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_MOV: ('mov64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_ARSH: ('arsh64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_ALU64 | BPF_X | BPF_ARSH: ('arsh64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_ALU64 | BPF_K | BPF_HOR: ('hor64', self._ana_reg_imm, CF_USE1 | CF_USE2), # new, SOLANA SPEC?
+            BPF_ALU64 | BPF_K | BPF_ADD: ('add64', self._ana_reg_imm, CF_USE1 | CF_USE2 | CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_ADD: ('add64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_SUB: ('sub64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_SUB: ('sub64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_MUL: ('mul64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_MUL: ('mul64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_DIV: ('div64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_DIV: ('div64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_OR: ('or64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_OR: ('or64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_AND: ('and64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_AND: ('and64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_LSH: ('lsh64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_LSH: ('lsh64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_RSH: ('rsh64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_RSH: ('rsh64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_NEG: ('neg64', self._ana_1reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_MOD: ('mod64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_MOD: ('mod64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_XOR: ('xor64', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_XOR: ('xor64', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_MOV: ('mov64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_MOV: ('mov64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_ARSH: ('arsh64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_X | BPF_ARSH: ('arsh64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU64 | BPF_K | BPF_HOR: ('hor64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1), # new, SOLANA SPEC?
 
-            BPF_PQR | BPF_B | BPF_K | BPF_LMUL: ('lmul64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_LMUL: ('lmul64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_K | BPF_UHMUL: ('uhmul64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_UHMUL: ('uhmul64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_K | BPF_UDIV: ('udiv64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_UDIV: ('udiv64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_K | BPF_UREM: ('urem64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_UREM: ('urem64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_K | BPF_SHMUL: ('shmul64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_SHMUL: ('shmul64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_K | BPF_SDIV: ('sdiv64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_SDIV: ('sdiv64', self._ana_2regs, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_K | BPF_SREM: ('srem64', self._ana_reg_imm, CF_USE1 | CF_USE2),
-            BPF_PQR | BPF_B | BPF_X | BPF_SREM: ('srem64', self._ana_2regs, CF_USE1 | CF_USE2),
+            BPF_PQR | BPF_B | BPF_K | BPF_LMUL: ('lmul64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_LMUL: ('lmul64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_K | BPF_UHMUL: ('uhmul64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_UHMUL: ('uhmul64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_K | BPF_UDIV: ('udiv64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_UDIV: ('udiv64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_K | BPF_UREM: ('urem64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_UREM: ('urem64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_K | BPF_SHMUL: ('shmul64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_SHMUL: ('shmul64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_K | BPF_SDIV: ('sdiv64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_SDIV: ('sdiv64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_K | BPF_SREM: ('srem64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_B | BPF_X | BPF_SREM: ('srem64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
 
 
             # BRANCHES
@@ -780,6 +781,7 @@ class EBPFProc(processor_t):
 
         if insn[0].type == o_displ or insn[1].type == o_displ:
             op_ind = 0 if insn[0].type == o_displ else 1
+            # TODO: trace sp when it changes and call add_auto_stkpnt
             if may_create_stkvars():
                 val = ctypes.c_int16(insn[op_ind].value).value # create_stkvar takes signed value
                 if insn.create_stkvar(insn[op_ind], val, STKVAR_VALID_SIZE):
@@ -789,7 +791,6 @@ class EBPFProc(processor_t):
             if insn.ea in self.relocations:
                 self._apply_relocation(insn, self.relocations[insn.ea])
             
-        # TODO: use FLIRT/whatever to make nice annotations for helper calls, like we get for typical PEs
         if Feature & CF_CALL:
             if insn.ea in self.relocations:
                 self._apply_relocation(insn, self.relocations[insn.ea])
