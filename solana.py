@@ -210,7 +210,7 @@ BPF_JSLT = 0xc0
 BPF_JSLE = 0xd0
 
 class EBPFProc(processor_t):
-    id = 247
+    id = 0x8000 + 247 # 0x8000+ are reserved for third party plugins
     flag = PR_ASSEMBLE | PR_SEGS | PR_DEFSEG32 | PR_USE32 | PRN_HEX | PR_RNAMESOK | PR_NO_SEGMOVE
     cnbits = 8
     dnbits = 8
@@ -253,6 +253,12 @@ class EBPFProc(processor_t):
         "a_sizeof_fmt": "size %s",
 
     }
+
+    def ev_loader_elf_machine(self, li, machine_type, p_procname, p_pd, loader, reader): # doesn't work from ida python for some reason
+        print(f'ev_loader_elf_machine: {machine_type}')
+        if machine_type == 247:
+            p_procname = 'Solana VM'
+        return machine_type
 
     def __init__(self):
         processor_t.__init__(self)

@@ -12,6 +12,19 @@ To dump a program from Solana mainnet use the following command:
 solana program dump <address of an account> <output file>
 ```
 
+During the file import into IDA you may encounter the following error:
+
+![](./img/1.png)
+
+This is because the Solana EBPF processor should be selected explicitly. Double-click on the processor name in the processor list and select it:
+
+![](./img/2.png)
+
+Then select Yes:
+
+![](./img/3.png)
+
+
 ## FLIRT signatures
 
 Currently the last version of the signatures file is `flirt/solana.sig`. Place the file into `%IDA_DIR%/sig/solana` (create the solana folder) and load it via `File -> Load file -> FLIRT signature file...` menu.
