@@ -268,6 +268,7 @@ class EBPFProc(processor_t):
 
         self.relocations = {}
         self.functions = {}
+        self.sorted_strings = []
     
     def _parse_relocation(self, rel_type, loc, val):
         type_ = REL_TYPE[rel_type]
@@ -285,8 +286,9 @@ class EBPFProc(processor_t):
             #changes.append[{'loc': loc + 4, 'val': ((val - 8) / 8) & 0xFFFFFFFF}] strange, but that doesn't work
             changes.append({'loc': loc + 4, 'val': val & 0xFFFFFFFF})
         elif type_ == 'R_BPF_64_RELATIVE':
-            # ???
             pass
+        else:
+            print(f'[WARN] unknown relocation type: {type_}')
         
         return changes
 
@@ -312,8 +314,8 @@ class EBPFProc(processor_t):
 
             if symtab_s:
                 for sym in symtab_s.iter_symbols():
-                    symtab.append({'name': sym.name, 'val': sym.entry['st_value']})
-            
+                    symtab.append({'name': sym.name, 'val': sym.entry['st_value'], 'size': sym.entry['st_size']})
+                        
             for s in sections:
                 # dynamic
                 if s.header['sh_type'] == 'SHT_REL' and s.name == '.rel.dyn':
@@ -381,8 +383,133 @@ class EBPFProc(processor_t):
 
                         relocations[get_fileregion_ea(base_offset + reloc['r_offset'])] = relocation
 
-            return relocations, functions, rodata
+            return relocations, functions, rodata, symtab
     
+
+    """ ------ Strings ------ """
+    
+    def _recover_known_strings(self):
+        _rodata = get_segm_by_name(".rodata")
+        
+        strings_to_create = {}
+
+        for s in self.symtab:
+            if s['val'] >= _rodata.start_ea and s['val'] <= _rodata.end_ea:
+                l = s['size']
+                if l > 0:
+                    strings_to_create[s['val']] = l
+        
+        _data_rel_ro = get_segm_by_name(".data.rel.ro")
+        start_ea = _data_rel_ro.start_ea
+        loopcount = _data_rel_ro.end_ea - start_ea
+
+        for addr in range(0, loopcount - 4, 4):
+            Addr = get_dword(start_ea+addr)
+            l = get_dword(start_ea+addr+4)
+            if l < 1024 and Addr + l < 2**32:
+                if Addr >= _rodata.start_ea and Addr <= _rodata.end_ea:
+                    if Addr not in strings_to_create:
+                        strings_to_create[Addr] = l
+        
+        for k in strings_to_create.keys():
+            status = create_strlit(k, k + strings_to_create[k])
+            #print(f'[INFO] create_strlit {hex(k)} len {strings_to_create[k]}: {status}')
+
+            set_name(k, "str_%08X" % k, SN_FORCE)
+            self.sorted_strings.append([k, strings_to_create[k]])
+        
+        self.sorted_strings.sort(key=lambda x: x[0])
+    
+    def _binary_search(self, addr):
+        left = 0
+        right = len(self.sorted_strings) - 1
+        
+        while left <= right:
+            mid = (left + right) // 2
+            curr_addr = self.sorted_strings[mid][0]
+            curr_len = self.sorted_strings[mid][1]
+            
+            if curr_addr <= addr < curr_addr + curr_len:
+                return mid
+                
+            if curr_addr < addr:
+                left = mid + 1
+            else:
+                right = mid - 1
+                
+        return left - 1  # Return insertion point - 1
+
+    def _find_previous_string_idx(self, addr):
+        if not self.sorted_strings:
+            return None
+            
+        if addr < self.sorted_strings[0][0]:
+            return None
+            
+        idx = self._binary_search(addr)
+        if idx >= 0 and idx < len(self.sorted_strings):
+            return idx
+            
+        return None
+
+    def _find_next_string_idx(self, addr):
+        if not self.sorted_strings:
+            return None
+            
+        if addr >= self.sorted_strings[-1][0]:
+            return None
+            
+        idx = self._binary_search(addr)
+        next_idx = idx + 1
+        
+        if next_idx < len(self.sorted_strings):
+            return next_idx
+            
+        return None
+    
+    def getstr(self, addr, max_len=512):
+        data = get_bytes(addr, max_len)
+        for i in range(len(data)):
+            if data[i] == 0:
+                return data[:i]
+        return data
+
+    def _add_string(self, addr, size=None):
+        previous_idx = self._find_previous_string_idx(addr)
+        previous_string = self.sorted_strings[previous_idx]
+
+        if previous_string[0] + previous_string[1] >= addr:
+            # Patch previous string
+            new_len = addr - previous_string[0]
+            self.sorted_strings[previous_idx] = [previous_string[0], new_len]
+            create_strlit(previous_string[0], previous_string[0] + new_len)
+        
+        next_string = None
+        if previous_idx + 1 < len(self.sorted_strings):
+            next_string = self.sorted_strings[previous_idx + 1]
+            if next_string[0] == addr:
+                if size is not None and next_string[1] != size:
+                    # Patch already existing string
+                    self.sorted_strings[previous_idx + 1] = [addr, size]
+                    create_strlit(addr, addr + size)
+                return
+        
+        if size is None:
+            if next_string is not None:
+                size = next_string[0] - addr
+            else:
+                s = self.getstr(addr, 512)
+                size = len(s)
+
+        self.sorted_strings.insert(previous_idx + 1, [addr, size])
+        create_strlit(addr, addr + size)
+        set_name(addr, "str_%08X" % addr, SN_FORCE)
+
+
+    
+    #def _beautify_references(self):
+
+
     # callback from demangle_name
     # since the default demangler in IDA takes C++ names,
     # here we replace it with rust_demangler
@@ -400,12 +527,13 @@ class EBPFProc(processor_t):
             self.functions[name] = ea
             set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
         
-        self.relocations, self.funcs, self.rodata = self._extract_rels_funcs_rodata(fname)
+        self.relocations, self.funcs, self.rodata, self.symtab = self._extract_rels_funcs_rodata(fname)
+        print(f'[INFO] {len(self.relocations)} relocations found')
 
-        #print('\n')
-        #for r in self.relocations:
-        #    print('[INFO]', f'{hex(r)}:', self.relocations[r])
-        #print('\n')
+        self._recover_known_strings()
+
+        for ea, name in Names():
+            print(f'{hex(ea)}: {name}')
         
         return True
 
@@ -415,18 +543,18 @@ class EBPFProc(processor_t):
         self.OPCODES = {
             # MEM
             BPF_LD | BPF_IMM | BPF_DW: ('lddw', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
-            BPF_LDX | BPF_MEM | BPF_W: ('ldxw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            BPF_LDX | BPF_MEM | BPF_H: ('ldxh', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            BPF_LDX | BPF_MEM | BPF_B: ('ldxb', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            BPF_LDX | BPF_MEM | BPF_DW: ('ldxdw', self._ana_reg_regdisp, CF_USE1|CF_USE2),
-            BPF_ST | BPF_MEM | BPF_W: ('stw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_ST | BPF_MEM | BPF_H: ('sth', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_ST | BPF_MEM | BPF_B: ('stb', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_ST | BPF_MEM | BPF_DW: ('stdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_STX | BPF_MEM | BPF_W: ('stxw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_STX | BPF_MEM | BPF_H: ('stxh', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_STX | BPF_MEM | BPF_B: ('stxb', self._ana_regdisp_reg, CF_USE1|CF_USE2),
-            BPF_STX | BPF_MEM | BPF_DW: ('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2),
+            BPF_LDX | BPF_MEM | BPF_W: ('ldxw', self._ana_reg_regdisp, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_LDX | BPF_MEM | BPF_H: ('ldxh', self._ana_reg_regdisp, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_LDX | BPF_MEM | BPF_B: ('ldxb', self._ana_reg_regdisp, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_LDX | BPF_MEM | BPF_DW: ('ldxdw', self._ana_reg_regdisp, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ST | BPF_MEM | BPF_W: ('stw', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ST | BPF_MEM | BPF_H: ('sth', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ST | BPF_MEM | BPF_B: ('stb', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ST | BPF_MEM | BPF_DW: ('stdw', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_STX | BPF_MEM | BPF_W: ('stxw', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),    
+            BPF_STX | BPF_MEM | BPF_H: ('stxh', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_STX | BPF_MEM | BPF_B: ('stxb', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_STX | BPF_MEM | BPF_DW: ('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
 
             # ALU 32
             BPF_ALU | BPF_K | BPF_ADD: ('add32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
@@ -756,9 +884,27 @@ class EBPFProc(processor_t):
                 #print(f'[INFO] patched by offset {hex(mod["loc"])} -> {hex(mod["val"])}')
     
     def _apply_relocation(self, insn, relocation):
+        #return #1F0A8
         if relocation['type'] == 8:
-            #print('R_BPF_RELATIVE', hex(insn.ea), relocation['name'])
-            pass
+            print('R_BPF_RELATIVE', hex(insn.ea), relocation)
+            source_addr = insn[0].addr
+            target_addr = insn[1].value
+            print(f'target_addr: {hex(target_addr)}')
+            print(f'sclass: {getseg(target_addr).sclass}')
+            seg = getseg(target_addr)
+            if seg.sclass == 3: # CONST .data.rel.ro
+                pass
+            elif seg.sclass == 4: # CONST .text
+                if not get_func(target_addr):
+                    add_func(target_addr)
+                insn.add_cref(target_addr, insn[1].offb, fl_CF)
+            elif seg.sclass == 6: # CONST .rodata
+                self._add_string(target_addr)
+                insn.add_dref(target_addr, insn[1].offb, dr_R)
+            else:
+                print(f'unhandled sclass: {seg.sclass}')
+        
+
         patch_size = REL_PATCH_SIZE[relocation['type']]
         self._apply_rel_mods(relocation['mods'], patch_size)
         
@@ -796,18 +942,33 @@ class EBPFProc(processor_t):
         if insn[1].type == o_imm and insn[1].dtype == dt_qword:
             if insn.ea in self.relocations:
                 self._apply_relocation(insn, self.relocations[insn.ea])
-            
+        
+        abort = False
         if Feature & CF_CALL:
             if insn.ea in self.relocations:
                 self._apply_relocation(insn, self.relocations[insn.ea])
+                if self.relocations[insn.ea]['name'] == 'abort':
+                    abort = True
             else:
-                insn.add_cref(insn[0].addr, insn[0].offb, fl_CN)
+                insn.add_cref(insn[0].addr, insn[0].offb, fl_CF)
 
-        # continue execution flow if not stop instruction (call), and not unconditional jump
-        flow = (Feature & CF_STOP == 0) and not insn.itype == 0x5
+        # continue execution flow if not stop instruction (exit), not abort, and not unconditional jump
+        flow = (Feature & CF_STOP == 0) and not abort and not insn.itype == 0x5
         
         if flow:
             insn.add_cref(insn.ea + insn.size, 0, fl_F)
+        
+        for op in insn:
+            if op.type == o_imm and op.dtype == dt_qword:
+                addr = op.value
+                seg = getseg(addr)
+                if seg:
+                    if seg.sclass == 6: # CONST .rodata
+                        try:
+                            s = get_strlit_contents(addr, -1, STRTYPE_TERMCHR).decode()
+                            add_dref(op.addr, addr, dr_R)
+                        except Exception as e:
+                            pass
 
         return True
 
@@ -875,32 +1036,17 @@ class EBPFProc(processor_t):
                 addr = op.value
                 seg = getseg(addr)
                 isString = False
-                if seg:
-                    if seg.sclass == 6: # CONST .rodata
-                        try:
-                            s = get_strlit_contents(addr, -1, -1).decode()
-                            if len(s) > STRINGS_PREVIEW_LIMIT:
-                                s = s[:STRINGS_PREVIEW_LIMIT] + "..."
-                            s = "\"" + s + "\""
-                            ida_bytes.set_cmt(op.addr, s, True)
-                            sName = s[1:-1]
-                            if len(s) > 15:
-                                sName = s[:15]
-                            sName_ = ''
-                            for i in sName:
-                                if i in string.ascii_letters:
-                                    sName_ += i
-                            set_name(addr, sName_, SN_FORCE)
-                            add_dref(ctx.insn_ea, addr, dr_R)
-                            isString = True
-                        except Exception as e:
-                            print(e)
-                            pass
+                if seg and seg.sclass == 6: # CONST .rodata
+                    try:
+                        s = get_strlit_contents(addr, -1, -1).decode() # check if that's a string
+                        isString = True
+                    except Exception as e:
+                        pass
 
-                if isString:
-                    ctx.out_name_expr(op, addr, BADADDR)
-                else:
-                    ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
+                #if isString:
+                ctx.out_name_expr(op, addr, BADADDR)
+                #else:
+                #    ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
             elif op.dtype == dt_dword:
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
             else:
@@ -944,6 +1090,9 @@ class EBPFProc(processor_t):
         else:
             return False
         return True
+    
+    def ev_endbinary(self, *args):
+        print(f'[INFO] ev_endbinary: {args}')
 
 def PROCESSOR_ENTRY():
     return EBPFProc()
