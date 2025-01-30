@@ -412,13 +412,13 @@ class EBPFProc(processor_t):
                         strings_to_create[Addr] = l
         
         for k in strings_to_create.keys():
-            status = create_strlit(k, k + strings_to_create[k])
-            #print(f'[INFO] create_strlit {hex(k)} len {strings_to_create[k]}: {status}')
-
-            set_name(k, "str_%08X" % k, SN_FORCE)
-            self.sorted_strings.append([k, strings_to_create[k]])
+            #status = create_strlit(k, k + strings_to_create[k])
+            #set_name(k, "str_%08X" % k, SN_FORCE)
+            #self.sorted_strings.append([k, strings_to_create[k]])
+            if strings_to_create[k] > 0:
+                self._add_string(k, strings_to_create[k])
         
-        self.sorted_strings.sort(key=lambda x: x[0])
+        #self.sorted_strings.sort(key=lambda x: x[0])
     
     def _binary_search(self, addr):
         left = 0
@@ -476,13 +476,36 @@ class EBPFProc(processor_t):
 
     def _add_string(self, addr, size=None):
         previous_idx = self._find_previous_string_idx(addr)
+        if previous_idx is None:
+            if size is None:
+                s = self.getstr(addr, 512)
+                size = len(s)
+            
+            if self.sorted_strings and self.sorted_strings[0][0] < addr + size:
+                size = self.sorted_strings[0][0] - addr
+
+            self.sorted_strings.insert(0, [addr, size])
+            success = create_strlit(addr, addr + size)
+            set_name(addr, "str_%08X" % addr, SN_FORCE)
+            return
+
         previous_string = self.sorted_strings[previous_idx]
+        if previous_string[0] == addr:
+            if size is None:
+                size = 512
+
+            if previous_string[1] > size:
+                success = create_strlit(addr, addr + size)
+                if success:
+                    self.sorted_strings[previous_idx] = [addr, size]
+            return
 
         if previous_string[0] + previous_string[1] >= addr:
             # Patch previous string
             new_len = addr - previous_string[0]
-            self.sorted_strings[previous_idx] = [previous_string[0], new_len]
-            create_strlit(previous_string[0], previous_string[0] + new_len)
+            success = create_strlit(previous_string[0], previous_string[0] + new_len)
+            if success:
+                self.sorted_strings[previous_idx] = [previous_string[0], new_len]
         
         next_string = None
         if previous_idx + 1 < len(self.sorted_strings):
@@ -490,8 +513,9 @@ class EBPFProc(processor_t):
             if next_string[0] == addr:
                 if size is not None and next_string[1] != size:
                     # Patch already existing string
-                    self.sorted_strings[previous_idx + 1] = [addr, size]
-                    create_strlit(addr, addr + size)
+                    success = create_strlit(addr, addr + size)
+                    if success:
+                        self.sorted_strings[previous_idx + 1] = [addr, size]
                 return
         
         if size is None:
@@ -500,11 +524,15 @@ class EBPFProc(processor_t):
             else:
                 s = self.getstr(addr, 512)
                 size = len(s)
+        
+        if size == 0:
+            return
 
-        self.sorted_strings.insert(previous_idx + 1, [addr, size])
-        create_strlit(addr, addr + size)
-        set_name(addr, "str_%08X" % addr, SN_FORCE)
-
+        success = create_strlit(addr, addr + size)
+        if success:
+            self.sorted_strings.insert(previous_idx + 1, [addr, size])
+            set_name(addr, "str_%08X" % addr, SN_FORCE)
+        return
 
     
     #def _beautify_references(self):
@@ -885,7 +913,7 @@ class EBPFProc(processor_t):
     
     def _apply_relocation(self, insn, relocation):
         #return #1F0A8
-        if relocation['type'] == 8:
+        if relocation['type'] == 8: # lddw usually
             print('R_BPF_RELATIVE', hex(insn.ea), relocation)
             source_addr = insn[0].addr
             target_addr = insn[1].value
@@ -1043,10 +1071,11 @@ class EBPFProc(processor_t):
                     except Exception as e:
                         pass
 
-                #if isString:
-                ctx.out_name_expr(op, addr, BADADDR)
-                #else:
-                #    ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
+                name = get_name(addr)
+                if name:
+                    ctx.out_name_expr(op, addr, BADADDR)
+                else:
+                    ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
             elif op.dtype == dt_dword:
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
             else:
