@@ -18,6 +18,8 @@ from elftools.elf.sections import SymbolTableSection
 from rust_demangler.rust import TypeNotFoundError
 
 import rust_demangler
+import ida_bytes
+import ida_offset
 import string
 #import cxxfilt
 
@@ -477,7 +479,7 @@ class EBPFProc(processor_t):
     def _add_string(self, addr, size=None):
         previous_idx = self._find_previous_string_idx(addr)
         if previous_idx is None:
-            if size is None:
+            if size is None or size == 0:
                 s = self.getstr(addr, 512)
                 size = len(s)
             
@@ -487,18 +489,20 @@ class EBPFProc(processor_t):
             self.sorted_strings.insert(0, [addr, size])
             success = create_strlit(addr, addr + size)
             set_name(addr, "str_%08X" % addr, SN_FORCE)
-            return
+            return size
 
         previous_string = self.sorted_strings[previous_idx]
         if previous_string[0] == addr:
-            if size is None:
+            if size is None or size == 0:
                 size = 512
 
             if previous_string[1] > size:
                 success = create_strlit(addr, addr + size)
                 if success:
                     self.sorted_strings[previous_idx] = [addr, size]
-            return
+            else:
+                size = previous_string[1]
+            return size
 
         if previous_string[0] + previous_string[1] >= addr:
             # Patch previous string
@@ -511,14 +515,17 @@ class EBPFProc(processor_t):
         if previous_idx + 1 < len(self.sorted_strings):
             next_string = self.sorted_strings[previous_idx + 1]
             if next_string[0] == addr:
-                if size is not None and next_string[1] != size:
-                    # Patch already existing string
-                    success = create_strlit(addr, addr + size)
-                    if success:
-                        self.sorted_strings[previous_idx + 1] = [addr, size]
-                return
+                if size not in [None, 0]:
+                    if next_string[1] != size:
+                        # Patch already existing string
+                        success = create_strlit(addr, addr + size)
+                        if success:
+                            self.sorted_strings[previous_idx + 1] = [addr, size]
+                else:
+                    return self.sorted_strings[previous_idx + 1][1]
+                return size
         
-        if size is None:
+        if size is None or size == 0: # 285c0
             if next_string is not None:
                 size = next_string[0] - addr
             else:
@@ -526,13 +533,13 @@ class EBPFProc(processor_t):
                 size = len(s)
         
         if size == 0:
-            return
+            return size
 
         success = create_strlit(addr, addr + size)
         if success:
             self.sorted_strings.insert(previous_idx + 1, [addr, size])
             set_name(addr, "str_%08X" % addr, SN_FORCE)
-        return
+        return size
 
     
     #def _beautify_references(self):
@@ -921,7 +928,39 @@ class EBPFProc(processor_t):
             print(f'sclass: {getseg(target_addr).sclass}')
             seg = getseg(target_addr)
             if seg.sclass == 3: # CONST .data.rel.ro
-                pass
+                # Resolve reference
+                try:
+                    ref_addr = get_dword(target_addr + 4)
+                    ref_len = get_dword(target_addr + 8)
+                    seg_ = getseg(ref_addr)
+                    if seg_.sclass == 6: # CONST .rodata
+                        len_ = self._add_string(ref_addr, ref_len)
+                        print(f'added string {hex(ref_addr)} len: {len_}')
+                        name = get_name(ref_addr)
+                        if name:
+                            ida_bytes.create_dword(target_addr, 4)
+                            ida_bytes.create_dword(target_addr + 4, 4)
+                            ida_bytes.create_dword(target_addr + 8, 4)
+
+                            ida_offset.op_offset(target_addr + 4, 0, REF_OFF32)
+
+                            set_name(target_addr, f"{name}_ref", SN_FORCE)
+                            set_name(target_addr + 4, f"{name}_ref_addr", SN_FORCE)
+                            set_name(target_addr + 8, f"{name}_ref_len", SN_FORCE)
+
+                            add_dref(insn.ea, target_addr, dr_O)
+
+                            s = get_strlit_contents(ref_addr, len_, STRTYPE_TERMCHR).decode("utf-8", errors="ignore")
+                            s_preview = 'Ref to "' + s[:40] + '"'
+                            if len(s) > 40:
+                                s_preview += "..."
+
+                            set_cmt(source_addr, "", 0)
+                            set_cmt(source_addr, s_preview, 0)
+                            
+                            
+                except Exception as e:
+                    print(f'error during reference resolution: {e}')
             elif seg.sclass == 4: # CONST .text
                 if not get_func(target_addr):
                     add_func(target_addr)
