@@ -6,212 +6,37 @@
 # return.    Clement Berthaux
 # ----------------------------------------------------------------------------
 
-from idaapi import *
-from idc import *
-from idautils import *
-from ida_segment import *
-from ida_frame import *
+from idaapi import (PR_ASSEMBLE, PR_SEGS, PR_DEFSEG32, PR_USE32, PRN_HEX, PR_RNAMESOK, PR_NO_SEGMOVE,
+                    ASH_HEXF3, AS_UNEQU, AS_COLON, ASB_BINF4, AS_N2CHR,
+                    SN_NOCHECK, SN_FORCE, STKVAR_VALID_SIZE,
+                    CF_USE1, CF_USE2, CF_USE3, CF_CHG1, 
+                    CF_JUMP, CF_CALL, CF_STOP,
+                    o_reg, o_imm, dt_dword, dt_qword, 
+                    o_near, o_displ, dt_word, o_phrase, o_mem,
+                    REF_OFF32,
+                    dr_O, dr_R,
+                    fl_F, fl_CN, fl_CF, fl_JN,
+                    STRTYPE_TERMCHR,
+                    OOF_SIGNED, OOFS_NEEDSIGN, OOFW_IMM, OOFW_64, OOFW_32, OOFW_16)
 
-from elftools.elf.elffile import ELFFile
-from elftools.elf.relocation import RelocationSection
-from elftools.elf.sections import SymbolTableSection
-from rust_demangler.rust import TypeNotFoundError
 
 import rust_demangler
-import ida_bytes
-import ida_offset
-import string
-#import cxxfilt
+import idaapi
+import idautils
+import ctypes
+import os
 
-# BPF ALU defines from uapi/linux/bpf_common.h
-# Mainly using these for disassembling atomic instructions
-BPF_ADD = 0x00
-BPF_SUB = 0x10
-BPF_MUL = 0x20
-BPF_DIV = 0x30
-BPF_OR  = 0x40
-BPF_AND = 0x50
-BPF_LSH = 0x60
-BPF_RSH = 0x70
-BPF_NEG = 0x80
-BPF_MOD = 0x90
-BPF_XOR = 0xa0
-
-# and these atomic-specific constants from include/uapi/linux/bpf.h
-# /* atomic op type fields (stored in immediate) */
-BPF_FETCH = 0x01 # /* not an opcode on its own, used to build others */
-BPF_XCHG = (0xe0 | BPF_FETCH) # /* atomic exchange */
-BPF_CMPXCHG = (0xf0 | BPF_FETCH) # /* atomic compare-and-write */
-
-# being lazy, we only use this for atomic ops so far
-bpf_alu_string = {BPF_ADD: 'add', BPF_AND: 'and', BPF_OR: 'or', BPF_XOR: 'xor'}
+from solana.relocations import parse_relocation, process_relocations
+from solana.helpers import decode_name
+from solana.strings import add_string, recover_known_strings
+from solana.constants import *
+from solana.config import *
+from solana.anchor import AnchorBeautifier
 
 class DecodingError(Exception):
     pass
 
-class INST_TYPES(object):
-    pass
-
-extern_segment = 0x00
-
-STRINGS_PREVIEW_LIMIT = 30
-
-REL_TYPE = {
-    0: 'R_BPF_NONE',
-    1: 'R_BPF_64_64',
-    2: 'R_BPF_64_ABS64',
-    3: 'R_BPF_64_ABS32',
-    4: 'R_BPF_64_NODYLD32',
-    8: 'R_BPF_64_RELATIVE', # SOLANA SPEC (https://github.com/solana-labs/llvm-project/blob/038d472bcd0b82ff768b515cc77dfb1e3a396ca8/llvm/include/llvm/BinaryFormat/ELFRelocs/BPF.def#L11)
-    10: 'R_BPF_64_32'
-}
-
-REL_PATCH_SIZE = {
-    0: None,
-    1: 32,
-    2: 64,
-    3: 32,
-    4: 32,
-    8: 32,
-    10: 32
-}
-
-# Three least significant bits are operation class:
-## BPF operation class: load from immediate. [DEPRECATED]
-BPF_LD = 0x00
-## BPF operation class: load from register.
-BPF_LDX = 0x01
-## BPF operation class: store immediate.
-BPF_ST = 0x02
-## BPF operation class: store value from register.
-BPF_STX = 0x03
-## BPF operation class: 32 bits arithmetic operation.
-BPF_ALU = 0x04
-## BPF operation class: jump.
-BPF_JMP = 0x05
-## BPF operation class: product / quotient / remainder.
-BPF_PQR = 0x06
-## BPF operation class: 64 bits arithmetic operation.
-BPF_ALU64 = 0x07
-
-# Size modifiers:
-## BPF size modifier: word (4 bytes).
-BPF_W = 0x00
-## BPF size modifier: half-word (2 bytes).
-BPF_H = 0x08
-## BPF size modifier: byte (1 byte).
-BPF_B = 0x10
-## BPF size modifier: double word (8 bytes).
-BPF_DW = 0x18
-
-# Mode modifiers:
-## BPF mode modifier: immediate value.
-BPF_IMM = 0x00
-## BPF mode modifier: absolute load.
-BPF_ABS = 0x20
-## BPF mode modifier: indirect load.
-BPF_IND = 0x40
-## BPF mode modifier: load from / store to memory.
-BPF_MEM = 0x60
-# [ 0x80 reserved ]
-# [ 0xa0 reserved ]
-# [ 0xc0 reserved ]
-
-# For arithmetic (BPF_ALU/BPF_ALU64) and jump (BPF_JMP) instructions:
-# +----------------+--------+--------+
-# |     4 bits     |1 b.|   3 bits   |
-# | operation code | src| insn class |
-# +----------------+----+------------+
-# (MSB)                          (LSB)
-
-# Source modifiers:
-## BPF source operand modifier: 32-bit immediate value.
-BPF_K = 0x00
-## BPF source operand modifier: `src` register.
-BPF_X = 0x08
-
-# Operation codes -- BPF_ALU or BPF_ALU64 classes:
-## BPF ALU/ALU64 operation code: addition.
-BPF_ADD = 0x00
-## BPF ALU/ALU64 operation code: subtraction.
-BPF_SUB = 0x10
-## BPF ALU/ALU64 operation code: multiplication. [DEPRECATED]
-BPF_MUL = 0x20
-## BPF ALU/ALU64 operation code: division. [DEPRECATED]
-BPF_DIV = 0x30
-## BPF ALU/ALU64 operation code: or.
-BPF_OR = 0x40
-## BPF ALU/ALU64 operation code: and.
-BPF_AND = 0x50
-## BPF ALU/ALU64 operation code: left shift.
-BPF_LSH = 0x60
-## BPF ALU/ALU64 operation code: right shift.
-BPF_RSH = 0x70
-## BPF ALU/ALU64 operation code: negation. [DEPRECATED]
-BPF_NEG = 0x80
-## BPF ALU/ALU64 operation code: modulus. [DEPRECATED]
-BPF_MOD = 0x90
-## BPF ALU/ALU64 operation code: exclusive or.
-BPF_XOR = 0xa0
-## BPF ALU/ALU64 operation code: move.
-BPF_MOV = 0xb0
-## BPF ALU/ALU64 operation code: sign extending right shift.
-BPF_ARSH = 0xc0
-## BPF ALU/ALU64 operation code: endianness conversion.
-BPF_END = 0xd0
-## BPF ALU/ALU64 operation code: high or.
-BPF_HOR = 0xf0
-
-# Operation codes -- BPF_PQR class:
-#    7         6               5                               4       3          2-0
-# 0  Unsigned  Multiplication  Product Lower Half / Quotient   32 Bit  Immediate  PQR
-# 1  Signed    Division        Product Upper Half / Remainder  64 Bit  Register   PQR
-## BPF PQR operation code: unsigned high multiplication.
-BPF_UHMUL = 0x20
-## BPF PQR operation code: unsigned division quotient.
-BPF_UDIV = 0x40
-## BPF PQR operation code: unsigned division remainder.
-BPF_UREM = 0x60
-## BPF PQR operation code: low multiplication.
-BPF_LMUL = 0x80
-## BPF PQR operation code: signed high multiplication.
-BPF_SHMUL = 0xA0
-## BPF PQR operation code: signed division quotient.
-BPF_SDIV = 0xC0
-## BPF PQR operation code: signed division remainder.
-BPF_SREM = 0xE0
-
-# Operation codes -- BPF_JMP class:
-## BPF JMP operation code: jump.
-BPF_JA = 0x00
-## BPF JMP operation code: jump if equal.
-BPF_JEQ = 0x10
-## BPF JMP operation code: jump if greater than.
-BPF_JGT = 0x20
-## BPF JMP operation code: jump if greater or equal.
-BPF_JGE = 0x30
-## BPF JMP operation code: jump if `src` & `reg`.
-BPF_JSET = 0x40
-## BPF JMP operation code: jump if not equal.
-BPF_JNE = 0x50
-## BPF JMP operation code: jump if greater than (signed).
-BPF_JSGT = 0x60
-## BPF JMP operation code: jump if greater or equal (signed).
-BPF_JSGE = 0x70
-## BPF JMP operation code: syscall function call.
-BPF_CALL = 0x80
-## BPF JMP operation code: return from program.
-BPF_EXIT = 0x90
-## BPF JMP operation code: jump if lower than.
-BPF_JLT = 0xa0
-## BPF JMP operation code: jump if lower or equal.
-BPF_JLE = 0xb0
-## BPF JMP operation code: jump if lower than (signed).
-BPF_JSLT = 0xc0
-## BPF JMP operation code: jump if lower or equal (signed).
-BPF_JSLE = 0xd0
-
-class EBPFProc(processor_t):
+class EBPFProc(idaapi.processor_t):
     id = 0x8000 + 247 # 0x8000+ are reserved for third party plugins
     flag = PR_ASSEMBLE | PR_SEGS | PR_DEFSEG32 | PR_USE32 | PRN_HEX | PR_RNAMESOK | PR_NO_SEGMOVE
     cnbits = 8
@@ -256,14 +81,8 @@ class EBPFProc(processor_t):
 
     }
 
-    def ev_loader_elf_machine(self, li, machine_type, p_procname, p_pd, loader, reader): # doesn't work from ida python for some reason
-        print(f'ev_loader_elf_machine: {machine_type}')
-        if machine_type == 247:
-            p_procname = 'Solana VM'
-        return machine_type
-
     def __init__(self):
-        processor_t.__init__(self)
+        idaapi.processor_t.__init__(self)
         
         self.init_instructions()
         self.init_registers()
@@ -271,280 +90,29 @@ class EBPFProc(processor_t):
         self.relocations = {}
         self.functions = {}
         self.sorted_strings = []
+        self.anchor_beautifier = AnchorBeautifier()
+
+        print('File dir', os.path.dirname(os.path.abspath(__file__)))
+
+    def ev_loader_elf_machine(self, li, machine_type, p_procname, p_pd, loader, reader): # doesn't work from ida python for some reason
+        if machine_type == 247:
+            p_procname = 'Solana VM'
+        return machine_type
     
-    def _parse_relocation(self, rel_type, loc, val):
-        type_ = REL_TYPE[rel_type]
-        changes = []
-        if type_ == 'R_BPF_64_64':
-            changes.append({'loc': loc + 4, 'val': val & 0xFFFFFFFF})
-            changes.append({'loc': loc + 8 + 4, 'val': val >> 32})
-        elif type_ == 'R_BPF_64_ABS64':
-            changes.append({'loc': loc, 'val': val})
-        elif type_ == 'R_BPF_64_ABS32':
-            pass
-        elif type_ == 'R_BPF_64_NODYLD32':
-            changes.append({'loc': loc, 'val': val & 0xFFFFFFFF})
-        elif type_ == 'R_BPF_64_32':
-            #changes.append[{'loc': loc + 4, 'val': ((val - 8) / 8) & 0xFFFFFFFF}] strange, but that doesn't work
-            changes.append({'loc': loc + 4, 'val': val & 0xFFFFFFFF})
-        elif type_ == 'R_BPF_64_RELATIVE':
-            pass
-        else:
-            print(f'[WARN] unknown relocation type: {type_}')
+    def ev_newfile(self, fname):
+        for ea, name in idautils.Names():
+            name = decode_name(name)
+            self.functions[name] = ea
+            idaapi.set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
         
-        return changes
+        self.relocations, self.funcs, self.rodata, self.symtab = process_relocations(fname)
+        self.sorted_strings = recover_known_strings(self.sorted_strings, self.symtab)
 
-    def _decode_name(self, name):
-        name = name.replace('.rel.text.','')
-        name = name.replace('.rel.data.rel.ro.','')
-        return name
+        if self.anchor_beautifier.is_anchor():
+            print("[INFO] Anchor program detected")
+        
+        return True
     
-    def _extract_rels_funcs_rodata(self, filename):
-        with open(filename, 'rb') as f:
-            elffile = ELFFile(f)
-
-            sections = []
-            for section in elffile.iter_sections():
-                sections.append(section)
-
-            relocations = {}
-            functions = {}
-            rodata = {}
-
-            symtab_s = elffile.get_section_by_name('.symtab')
-            symtab = []
-
-            if symtab_s:
-                for sym in symtab_s.iter_symbols():
-                    symtab.append({'name': sym.name, 'val': sym.entry['st_value'], 'size': sym.entry['st_size']})
-                        
-            for s in sections:
-                # dynamic
-                if s.header['sh_type'] == 'SHT_REL' and s.name == '.rel.dyn':
-                    dynsym = elffile.get_section_by_name(".dynsym")
-                    if not dynsym or not isinstance(dynsym, SymbolTableSection):
-                        print("dynsym not found. what?")
-                        continue
-                    
-                    symbols = []
-                    for symbol in dynsym.iter_symbols():
-                        symbols.append({'name': symbol.name, 'val': symbol.entry['st_value']})
-                    
-                    for reloc in s.iter_relocations():
-                        relsym = symbols[reloc['r_info_sym']]
-
-                        name = self._decode_name(relsym['name'])
-
-                        reloc_parsed = self._parse_relocation(reloc['r_info_type'], reloc['r_offset'], relsym['val'])
-                        mods = []
-
-                        for r in reloc_parsed:
-                            mods.append({'loc': get_fileregion_ea(r['loc']), 'val': r['val']})
-                        
-                        relocation = {
-                            'type': reloc['r_info_type'],
-                            'name': name,
-                            'mods': mods
-                        }
-
-                        relocations[get_fileregion_ea(reloc['r_offset'])] = relocation
-                        
-                    continue
-
-                if s.header['sh_type'] == 'SHT_REL':
-                    if not symtab_s:
-                        print("symtab section not found. what?")
-                        continue
-
-                    code_s = sections[s.header['sh_info']]
-                    base_offset = code_s.header['sh_offset']
-
-                    section_name = self._decode_name(s.name)
-                    ea_addr = get_fileregion_ea(base_offset)
-                    if s.name.startswith('.rel.text.'):
-                        functions[section_name] = ea_addr
-                    elif s.name.startswith('.rel.data.rel.ro.'):
-                        rodata[section_name] = ea_addr
-
-                    for reloc in s.iter_relocations():
-                        relsym = symtab[reloc['r_info_sym']]
-
-                        name = self._decode_name(relsym['name'])
-
-                        reloc_parsed = self._parse_relocation(reloc['r_info_type'], reloc['r_offset'], relsym['val'])
-                        mods = []
-
-                        for r in reloc_parsed:
-                            mods.append({'loc': get_fileregion_ea(base_offset + r['loc']), 'val': r['val']})
-                        
-                        relocation = {
-                            'type': reloc['r_info_type'],
-                            'name': name,
-                            'mods': mods
-                        }
-
-                        relocations[get_fileregion_ea(base_offset + reloc['r_offset'])] = relocation
-
-            return relocations, functions, rodata, symtab
-    
-
-    """ ------ Strings ------ """
-    
-    def _recover_known_strings(self):
-        _rodata = get_segm_by_name(".rodata")
-        
-        strings_to_create = {}
-
-        for s in self.symtab:
-            if s['val'] >= _rodata.start_ea and s['val'] <= _rodata.end_ea:
-                l = s['size']
-                if l > 0:
-                    strings_to_create[s['val']] = l
-        
-        _data_rel_ro = get_segm_by_name(".data.rel.ro")
-        start_ea = _data_rel_ro.start_ea
-        loopcount = _data_rel_ro.end_ea - start_ea
-
-        for addr in range(0, loopcount - 4, 4):
-            Addr = get_dword(start_ea+addr)
-            l = get_dword(start_ea+addr+4)
-            if l < 1024 and Addr + l < 2**32:
-                if Addr >= _rodata.start_ea and Addr <= _rodata.end_ea:
-                    if Addr not in strings_to_create:
-                        strings_to_create[Addr] = l
-        
-        for k in strings_to_create.keys():
-            #status = create_strlit(k, k + strings_to_create[k])
-            #set_name(k, "str_%08X" % k, SN_FORCE)
-            #self.sorted_strings.append([k, strings_to_create[k]])
-            if strings_to_create[k] > 0:
-                self._add_string(k, strings_to_create[k])
-        
-        #self.sorted_strings.sort(key=lambda x: x[0])
-    
-    def _binary_search(self, addr):
-        left = 0
-        right = len(self.sorted_strings) - 1
-        
-        while left <= right:
-            mid = (left + right) // 2
-            curr_addr = self.sorted_strings[mid][0]
-            curr_len = self.sorted_strings[mid][1]
-            
-            if curr_addr <= addr < curr_addr + curr_len:
-                return mid
-                
-            if curr_addr < addr:
-                left = mid + 1
-            else:
-                right = mid - 1
-                
-        return left - 1  # Return insertion point - 1
-
-    def _find_previous_string_idx(self, addr):
-        if not self.sorted_strings:
-            return None
-            
-        if addr < self.sorted_strings[0][0]:
-            return None
-            
-        idx = self._binary_search(addr)
-        if idx >= 0 and idx < len(self.sorted_strings):
-            return idx
-            
-        return None
-
-    def _find_next_string_idx(self, addr):
-        if not self.sorted_strings:
-            return None
-            
-        if addr >= self.sorted_strings[-1][0]:
-            return None
-            
-        idx = self._binary_search(addr)
-        next_idx = idx + 1
-        
-        if next_idx < len(self.sorted_strings):
-            return next_idx
-            
-        return None
-    
-    def getstr(self, addr, max_len=512):
-        data = get_bytes(addr, max_len)
-        for i in range(len(data)):
-            if data[i] == 0:
-                return data[:i]
-        return data
-
-    def _add_string(self, addr, size=None):
-        previous_idx = self._find_previous_string_idx(addr)
-        if previous_idx is None:
-            if size is None or size == 0:
-                s = self.getstr(addr, 512)
-                size = len(s)
-            
-            if self.sorted_strings and self.sorted_strings[0][0] < addr + size:
-                size = self.sorted_strings[0][0] - addr
-
-            self.sorted_strings.insert(0, [addr, size])
-            success = create_strlit(addr, addr + size)
-            set_name(addr, "str_%08X" % addr, SN_FORCE)
-            return size
-
-        previous_string = self.sorted_strings[previous_idx]
-        if previous_string[0] == addr:
-            if size is None or size == 0:
-                size = 512
-
-            if previous_string[1] > size:
-                success = create_strlit(addr, addr + size)
-                if success:
-                    self.sorted_strings[previous_idx] = [addr, size]
-            else:
-                size = previous_string[1]
-            return size
-
-        if previous_string[0] + previous_string[1] >= addr:
-            # Patch previous string
-            new_len = addr - previous_string[0]
-            success = create_strlit(previous_string[0], previous_string[0] + new_len)
-            if success:
-                self.sorted_strings[previous_idx] = [previous_string[0], new_len]
-        
-        next_string = None
-        if previous_idx + 1 < len(self.sorted_strings):
-            next_string = self.sorted_strings[previous_idx + 1]
-            if next_string[0] == addr:
-                if size not in [None, 0]:
-                    if next_string[1] != size:
-                        # Patch already existing string
-                        success = create_strlit(addr, addr + size)
-                        if success:
-                            self.sorted_strings[previous_idx + 1] = [addr, size]
-                else:
-                    return self.sorted_strings[previous_idx + 1][1]
-                return size
-        
-        if size is None or size == 0: # 285c0
-            if next_string is not None:
-                size = next_string[0] - addr
-            else:
-                s = self.getstr(addr, 512)
-                size = len(s)
-        
-        if size == 0:
-            return size
-
-        success = create_strlit(addr, addr + size)
-        if success:
-            self.sorted_strings.insert(previous_idx + 1, [addr, size])
-            set_name(addr, "str_%08X" % addr, SN_FORCE)
-        return size
-
-    
-    #def _beautify_references(self):
-
-
     # callback from demangle_name
     # since the default demangler in IDA takes C++ names,
     # here we replace it with rust_demangler
@@ -553,24 +121,10 @@ class EBPFProc(processor_t):
         try:
             return [1, rust_demangler.demangle(name), 1] # use rust demangler
         except Exception as e:
-            #print(e)
             return [1, name, 1]
 
-    def ev_newfile(self, fname):
-        for ea, name in Names():
-            name = self._decode_name(name)
-            self.functions[name] = ea
-            set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
-        
-        self.relocations, self.funcs, self.rodata, self.symtab = self._extract_rels_funcs_rodata(fname)
-        print(f'[INFO] {len(self.relocations)} relocations found')
-
-        self._recover_known_strings()
-
-        for ea, name in Names():
-            print(f'{hex(ea)}: {name}')
-        
-        return True
+    
+    ''' ----- Instructions processing -----'''
 
     def init_instructions(self):
         # https://github.com/solana-labs/rbpf/blob/179a0f94b68ae0bef892b214750a54448d61b1be/src/ebpf.rs#L205
@@ -592,9 +146,9 @@ class EBPFProc(processor_t):
             BPF_STX | BPF_MEM | BPF_DW: ('stxdw', self._ana_regdisp_reg, CF_USE1|CF_USE2|CF_CHG1),
 
             # ALU 32
-            BPF_ALU | BPF_K | BPF_ADD: ('add32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_ADD: ('add32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
             BPF_ALU | BPF_X | BPF_ADD: ('add32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
-            BPF_ALU | BPF_K | BPF_SUB: ('sub32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_SUB: ('sub32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
             BPF_ALU | BPF_X | BPF_SUB: ('sub32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
             BPF_ALU | BPF_K | BPF_MUL: ('mul32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
             BPF_ALU | BPF_X | BPF_MUL: ('mul32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
@@ -613,13 +167,13 @@ class EBPFProc(processor_t):
             BPF_ALU | BPF_X | BPF_MOD: ('mod32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
             BPF_ALU | BPF_K | BPF_XOR: ('xor32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
             BPF_ALU | BPF_X | BPF_XOR: ('xor32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
-            BPF_ALU | BPF_K | BPF_MOV: ('mov32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
-            BPF_ALU | BPF_X | BPF_MOV: ('mov32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
-            BPF_ALU | BPF_K | BPF_ARSH: ('arsh32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
-            BPF_ALU | BPF_X | BPF_ARSH: ('arsh32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_MOV: ('mov32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_MOV: ('mov32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_K | BPF_ARSH: ('arsh32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_ALU | BPF_X | BPF_ARSH: ('arsh32', self._ana_2regs, CF_USE1|CF_USE2|CF_CHG1),
 
-            BPF_PQR | BPF_K | BPF_LMUL: ('lmul32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
-            BPF_PQR | BPF_X | BPF_LMUL: ('lmul32', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_K | BPF_LMUL: ('lmul32', self._ana_reg_imm, CF_USE1|CF_USE2|CF_CHG1),
+            BPF_PQR | BPF_X | BPF_LMUL: ('lmul32', self._ana_2regs, CF_USE1 |CF_USE2|CF_CHG1),
             # BPF_PQR | BPF_K | BPF_UHMUL: ('uhmul32', self._ana_reg_imm, CF_USE1 | CF_USE2),
             # BPF_PQR | BPF_X | BPF_UHMUL: ('uhmul32', self._ana_2regs, CF_USE1 | CF_USE2),
             BPF_PQR | BPF_K | BPF_UDIV: ('udiv32', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
@@ -680,7 +234,6 @@ class EBPFProc(processor_t):
             BPF_PQR | BPF_B | BPF_K | BPF_SREM: ('srem64', self._ana_reg_imm, CF_USE1 | CF_USE2|CF_CHG1),
             BPF_PQR | BPF_B | BPF_X | BPF_SREM: ('srem64', self._ana_2regs, CF_USE1 | CF_USE2|CF_CHG1),
 
-
             # BRANCHES
             BPF_JMP | BPF_JA: ('ja', self._ana_jmp, CF_USE1|CF_JUMP),
             BPF_JMP | BPF_K | BPF_JEQ: ('jeq', self._ana_cond_jmp_reg_imm, CF_USE1 | CF_USE2 | CF_USE3 | CF_JUMP),
@@ -711,9 +264,7 @@ class EBPFProc(processor_t):
             BPF_JMP | BPF_X | BPF_CALL: ('callx', self._ana_callx, CF_USE1|CF_CALL), # tail call
             BPF_JMP | BPF_EXIT: ('exit', self._ana_nop, CF_STOP) # return r0
         }
-        
-        Instructions = [{'name':x[0], 'feature':x[2]} for x in self.OPCODES.values()]
-        self.inames = {v[0]:k for k,v in self.OPCODES.items()}
+
         self.instruc_end = 0xff
         self.instruc = [({'name':self.OPCODES[i][0], 'feature':self.OPCODES[i][2]} if i in self.OPCODES else {'name':'unknown_opcode', 'feature':0}) for i in range(0xff)]
         
@@ -800,7 +351,7 @@ class EBPFProc(processor_t):
         insn[0].dtype = dt_dword
 
         if insn.ea in self.relocations:
-            insn[0].addr = BADADDR
+            insn[0].addr = idaapi.BADADDR
             return
 
         offset = ctypes.c_int32(self.imm).value
@@ -911,62 +462,56 @@ class EBPFProc(processor_t):
         for mod in mods:
             if mod['val'] != 0:
                 if patch_size == 32:
-                    patch_dword(mod['loc'], mod['val'])
+                    idaapi.patch_dword(mod['loc'], mod['val'])
                 elif patch_size == 64:
-                    patch_qword(mod['loc'], mod['val'])
+                    idaapi.patch_qword(mod['loc'], mod['val'])
                 else:
                     print('[ERROR] apply relocation: none type')
-                #print(f'[INFO] patched by offset {hex(mod["loc"])} -> {hex(mod["val"])}')
     
     def _apply_relocation(self, insn, relocation):
-        #return #1F0A8
         if relocation['type'] == 8: # lddw usually
-            print('R_BPF_RELATIVE', hex(insn.ea), relocation)
             source_addr = insn[0].addr
             target_addr = insn[1].value
-            print(f'target_addr: {hex(target_addr)}')
-            print(f'sclass: {getseg(target_addr).sclass}')
-            seg = getseg(target_addr)
+            seg = idaapi.getseg(target_addr)
             if seg.sclass == 3: # CONST .data.rel.ro
                 # Resolve reference
                 try:
-                    ref_addr = get_dword(target_addr + 4)
-                    ref_len = get_dword(target_addr + 8)
-                    seg_ = getseg(ref_addr)
+                    ref_addr = idaapi.get_dword(target_addr + 4)
+                    ref_len = idaapi.get_dword(target_addr + 8)
+                    seg_ = idaapi.getseg(ref_addr)
                     if seg_.sclass == 6: # CONST .rodata
-                        len_ = self._add_string(ref_addr, ref_len)
-                        print(f'added string {hex(ref_addr)} len: {len_}')
-                        name = get_name(ref_addr)
+                        self.sorted_strings, len_ = add_string(self.sorted_strings, ref_addr, ref_len)
+                        name = idaapi.get_name(ref_addr)
                         if name:
-                            ida_bytes.create_dword(target_addr, 4)
-                            ida_bytes.create_dword(target_addr + 4, 4)
-                            ida_bytes.create_dword(target_addr + 8, 4)
+                            idaapi.create_dword(target_addr, 4)
+                            idaapi.create_dword(target_addr + 4, 4)
+                            idaapi.create_dword(target_addr + 8, 4)
 
-                            ida_offset.op_offset(target_addr + 4, 0, REF_OFF32)
+                            idaapi.op_offset(target_addr + 4, 0, REF_OFF32)
 
-                            set_name(target_addr, f"{name}_ref", SN_FORCE)
-                            set_name(target_addr + 4, f"{name}_ref_addr", SN_FORCE)
-                            set_name(target_addr + 8, f"{name}_ref_len", SN_FORCE)
+                            idaapi.set_name(target_addr, f"{name}_ref", SN_FORCE)
+                            idaapi.set_name(target_addr + 4, f"{name}_ref_addr", SN_FORCE)
+                            idaapi.set_name(target_addr + 8, f"{name}_ref_len", SN_FORCE)
 
-                            add_dref(insn.ea, target_addr, dr_O)
+                            idaapi.add_dref(insn.ea, target_addr, dr_O)
 
-                            s = get_strlit_contents(ref_addr, len_, STRTYPE_TERMCHR).decode("utf-8", errors="ignore")
-                            s_preview = 'Ref to "' + s[:40] + '"'
-                            if len(s) > 40:
+                            s = idaapi.get_strlit_contents(ref_addr, len_, STRTYPE_TERMCHR).decode("utf-8", errors="ignore")
+                            s_preview = 'Ref to "' + s[:STRINGS_PREVIEW_LIMIT] + '"'
+                            if len(s) > STRINGS_PREVIEW_LIMIT:
                                 s_preview += "..."
 
-                            set_cmt(source_addr, "", 0)
-                            set_cmt(source_addr, s_preview, 0)
+                            idaapi.set_cmt(source_addr, "", 0)
+                            idaapi.set_cmt(source_addr, s_preview, 0)
                             
                             
                 except Exception as e:
                     print(f'error during reference resolution: {e}')
             elif seg.sclass == 4: # CONST .text
-                if not get_func(target_addr):
-                    add_func(target_addr)
+                if not idaapi.get_func(target_addr):
+                    idaapi.add_func(target_addr)
                 insn.add_cref(target_addr, insn[1].offb, fl_CF)
             elif seg.sclass == 6: # CONST .rodata
-                self._add_string(target_addr)
+                self.sorted_strings, len_ = add_string(self.sorted_strings, target_addr)
                 insn.add_dref(target_addr, insn[1].offb, dr_R)
             else:
                 print(f'unhandled sclass: {seg.sclass}')
@@ -984,10 +529,9 @@ class EBPFProc(processor_t):
         if REL_TYPE[relocation['type']] == 'R_BPF_64_64': # lddw
             if relocation['name'] in self.rodata:
                 data_addr = self.rodata[relocation['name']]
-                mods = self._parse_relocation(relocation['type'], insn.ea, data_addr)
+                mods = parse_relocation(relocation['type'], insn.ea, data_addr)
                 self._apply_rel_mods(mods, patch_size)
                 insn.add_dref(data_addr, insn[1].offb, dr_R)
-                print('R_BPF_64_64', hex(insn.ea), data_addr, relocation['name'])
 
 
     def ev_emu_insn(self, insn):
@@ -996,15 +540,15 @@ class EBPFProc(processor_t):
         if Feature & CF_JUMP:
             dst_op_index = 0 if insn.itype == 0x5 else 2
             insn.add_cref(insn[dst_op_index].addr, insn[dst_op_index].offb, fl_JN)
-            remember_problem(cvar.PR_JUMP, insn.ea) # PR_JUMP ignored?
+            idaapi.remember_problem(idaapi.PR_JUMP, insn.ea) # PR_JUMP ignored?
 
         if insn[0].type == o_displ or insn[1].type == o_displ:
             op_ind = 0 if insn[0].type == o_displ else 1
             # TODO: trace sp when it changes and call add_auto_stkpnt
-            if may_create_stkvars():
+            if idaapi.may_create_stkvars():
                 val = ctypes.c_int16(insn[op_ind].value).value # create_stkvar takes signed value
                 if insn.create_stkvar(insn[op_ind], val, STKVAR_VALID_SIZE):
-                    op_stkvar(insn.ea, op_ind)
+                    idaapi.op_stkvar(insn.ea, op_ind)
         
         if insn[1].type == o_imm and insn[1].dtype == dt_qword:
             if insn.ea in self.relocations:
@@ -1028,12 +572,12 @@ class EBPFProc(processor_t):
         for op in insn:
             if op.type == o_imm and op.dtype == dt_qword:
                 addr = op.value
-                seg = getseg(addr)
+                seg = idaapi.getseg(addr)
                 if seg:
                     if seg.sclass == 6: # CONST .rodata
                         try:
-                            s = get_strlit_contents(addr, -1, STRTYPE_TERMCHR).decode()
-                            add_dref(op.addr, addr, dr_R)
+                            s = idaapi.get_strlit_contents(addr, -1, STRTYPE_TERMCHR).decode()
+                            idaapi.add_dref(op.addr, addr, dr_R)
                         except Exception as e:
                             pass
 
@@ -1091,7 +635,7 @@ class EBPFProc(processor_t):
             ctx.out_char(',')
             ctx.out_char(' ')
             ctx.out_one_operand(2)
-        cvar.gl_comm = 1
+        idaapi.idaapi_Cvar().gl_comm = 1
         ctx.flush_outbuf()
 
     def ev_out_operand(self, ctx, op):
@@ -1101,18 +645,9 @@ class EBPFProc(processor_t):
         elif op.type == o_imm:
             if op.dtype == dt_qword:
                 addr = op.value
-                seg = getseg(addr)
-                isString = False
-                if seg and seg.sclass == 6: # CONST .rodata
-                    try:
-                        s = get_strlit_contents(addr, -1, -1).decode() # check if that's a string
-                        isString = True
-                    except Exception as e:
-                        pass
-
-                name = get_name(addr)
+                name = idaapi.get_name(addr)
                 if name:
-                    ctx.out_name_expr(op, addr, BADADDR)
+                    ctx.out_name_expr(op, addr, idaapi.BADADDR)
                 else:
                     ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
             elif op.dtype == dt_dword:
@@ -1123,17 +658,17 @@ class EBPFProc(processor_t):
 
         elif op.type in [o_near, o_mem]:
             if op.type == o_near and ctx.insn_ea in self.relocations:
-                ok = ctx.out_name_expr(op, self.functions[self.relocations[ctx.insn_ea]['name']], BADADDR)
+                ok = ctx.out_name_expr(op, self.functions[self.relocations[ctx.insn_ea]['name']], idaapi.BADADDR)
                 if not ok:
-                    ctx.out_tagon(COLOR_ERROR)
+                    ctx.out_tagon(idaapi.COLOR_ERROR)
                     ctx.out_long(self.functions[self.relocations[ctx.insn_ea]['name']], 16)
-                    ctx.out_tagoff(COLOR_ERROR)
+                    ctx.out_tagoff(idaapi.COLOR_ERROR)
             else:
-                ok = ctx.out_name_expr(op, op.addr, BADADDR)
+                ok = ctx.out_name_expr(op, op.addr, idaapi.BADADDR)
                 if not ok:
-                    ctx.out_tagon(COLOR_ERROR)
+                    ctx.out_tagon(idaapi.COLOR_ERROR)
                     ctx.out_long(op.addr, 16)
-                    ctx.out_tagoff(COLOR_ERROR)
+                    ctx.out_tagoff(idaapi.COLOR_ERROR)
                 
         elif op.type == o_phrase:
             ctx.out_printf('skb') # text color is a bit off. fix later.

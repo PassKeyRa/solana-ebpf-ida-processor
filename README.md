@@ -4,7 +4,7 @@ This is the processor plugin for IDA Pro that adds the ability to analyze Solana
 
 ## How to use
 
-Copy `solana.py` to the directory `<ida pro installation>/procs` and select the processor on a Solana program file loading to IDA.
+Copy `solana-init.py` script and the `solana` folder to the directory `<ida pro installation>/procs` and select the processor on a Solana program file loading to IDA.
 
 To dump a program from Solana mainnet use the following command:
 
@@ -31,12 +31,12 @@ Currently the last version of the signatures file is `flirt/solana.sig`. Place t
 
 ### New signature file generation
 
-The preprocessor `flirt/flair-preprocessor.py` generates a PAT file based on the given `.rlib` ELF eBPF library file with functions.
+The preprocessor `flirt/flair-preprocessor.py` generates a PAT file based on the given ELF eBPF library file extracted from `.rlib` file with functions.
 
-To generate a new signature file you need to collect various `.rlib` files that you want to process and generate the corresponding `.pat` file for each of these libraries. After that, use the `sigmake` tool from official FLAIR suite to create a single `.sig` from all `.pat` files. So, just 2 commands:
+To generate a new signature file you need to collect various `.rlib` files that you want to process, unpack them and generate the corresponding `.pat` file for each of `.o` libraries. After that, use the `sigmake` tool from official FLAIR suite to create a single `.sig` from all `.pat` files. So, just 2 commands:
 
 ```bash
-python3 flait-preprocessor.py <input_file>.rlib <output_file>.pat
+python3 flait-preprocessor.py <input_file>.o <output_file>.pat
 sigmake -nSolanaEBPF *.pat solana.sig
 ```
 
@@ -49,9 +49,7 @@ sigmake -nSolanaEBPF *.pat solana.sig
 
 ## TODO
 
-* Collect libraries and generate more signatures
-* Figure out how relative imports work in solana and implement it
-* Come up with more improvements for better bytecode readability
+* Parse and name Anchor functions and structures
 
 ## Thanks
 
