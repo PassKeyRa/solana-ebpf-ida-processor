@@ -26,7 +26,7 @@ import idautils
 import ctypes
 import os
 
-from solana.relocations import parse_relocation, process_relocations
+from solana.relocations import parse_relocation, process_relocations, apply_rel_mods, apply_relocation
 from solana.helpers import decode_name
 from solana.strings import add_string, recover_known_strings
 from solana.constants import *
@@ -90,9 +90,6 @@ class EBPFProc(idaapi.processor_t):
         self.relocations = {}
         self.functions = {}
         self.sorted_strings = []
-        self.anchor_beautifier = AnchorBeautifier()
-
-        print('File dir', os.path.dirname(os.path.abspath(__file__)))
 
     def ev_loader_elf_machine(self, li, machine_type, p_procname, p_pd, loader, reader): # doesn't work from ida python for some reason
         if machine_type == 247:
@@ -108,7 +105,8 @@ class EBPFProc(idaapi.processor_t):
         self.relocations, self.funcs, self.rodata, self.symtab = process_relocations(fname)
         self.sorted_strings = recover_known_strings(self.sorted_strings, self.symtab)
 
-        if self.anchor_beautifier.is_anchor():
+        self.anchor_beautifier = AnchorBeautifier()
+        if self.anchor_beautifier.is_anchor:
             print("[INFO] Anchor program detected")
         
         return True
@@ -457,82 +455,6 @@ class EBPFProc(idaapi.processor_t):
         insn[1].type = o_phrase
         insn[1].dtype = dt_dword
         insn[1].value = self.imm
-    
-    def _apply_rel_mods(self, mods, patch_size):
-        for mod in mods:
-            if mod['val'] != 0:
-                if patch_size == 32:
-                    idaapi.patch_dword(mod['loc'], mod['val'])
-                elif patch_size == 64:
-                    idaapi.patch_qword(mod['loc'], mod['val'])
-                else:
-                    print('[ERROR] apply relocation: none type')
-    
-    def _apply_relocation(self, insn, relocation):
-        if relocation['type'] == 8: # lddw usually
-            source_addr = insn[0].addr
-            target_addr = insn[1].value
-            seg = idaapi.getseg(target_addr)
-            if seg.sclass == 3: # CONST .data.rel.ro
-                # Resolve reference
-                try:
-                    ref_addr = idaapi.get_dword(target_addr + 4)
-                    ref_len = idaapi.get_dword(target_addr + 8)
-                    seg_ = idaapi.getseg(ref_addr)
-                    if seg_.sclass == 6: # CONST .rodata
-                        self.sorted_strings, len_ = add_string(self.sorted_strings, ref_addr, ref_len)
-                        name = idaapi.get_name(ref_addr)
-                        if name:
-                            idaapi.create_dword(target_addr, 4)
-                            idaapi.create_dword(target_addr + 4, 4)
-                            idaapi.create_dword(target_addr + 8, 4)
-
-                            idaapi.op_offset(target_addr + 4, 0, REF_OFF32)
-
-                            idaapi.set_name(target_addr, f"{name}_ref", SN_FORCE)
-                            idaapi.set_name(target_addr + 4, f"{name}_ref_addr", SN_FORCE)
-                            idaapi.set_name(target_addr + 8, f"{name}_ref_len", SN_FORCE)
-
-                            idaapi.add_dref(insn.ea, target_addr, dr_O)
-
-                            s = idaapi.get_strlit_contents(ref_addr, len_, STRTYPE_TERMCHR).decode("utf-8", errors="ignore")
-                            s_preview = 'Ref to "' + s[:STRINGS_PREVIEW_LIMIT] + '"'
-                            if len(s) > STRINGS_PREVIEW_LIMIT:
-                                s_preview += "..."
-
-                            idaapi.set_cmt(source_addr, "", 0)
-                            idaapi.set_cmt(source_addr, s_preview, 0)
-                            
-                            
-                except Exception as e:
-                    print(f'error during reference resolution: {e}')
-            elif seg.sclass == 4: # CONST .text
-                if not idaapi.get_func(target_addr):
-                    idaapi.add_func(target_addr)
-                insn.add_cref(target_addr, insn[1].offb, fl_CF)
-            elif seg.sclass == 6: # CONST .rodata
-                self.sorted_strings, len_ = add_string(self.sorted_strings, target_addr)
-                insn.add_dref(target_addr, insn[1].offb, dr_R)
-            else:
-                print(f'unhandled sclass: {seg.sclass}')
-        
-
-        patch_size = REL_PATCH_SIZE[relocation['type']]
-        self._apply_rel_mods(relocation['mods'], patch_size)
-        
-        if REL_TYPE[relocation['type']] == 'R_BPF_64_32': # call
-            if relocation['mods'][0]['val'] != 0: # internal function call
-                insn.add_cref(relocation['mods'][0]['val'], insn[0].offb, fl_CN)
-            else:
-                insn.add_dref(self.functions[relocation['name']], insn[0].offb, fl_CN)
-        
-        if REL_TYPE[relocation['type']] == 'R_BPF_64_64': # lddw
-            if relocation['name'] in self.rodata:
-                data_addr = self.rodata[relocation['name']]
-                mods = parse_relocation(relocation['type'], insn.ea, data_addr)
-                self._apply_rel_mods(mods, patch_size)
-                insn.add_dref(data_addr, insn[1].offb, dr_R)
-
 
     def ev_emu_insn(self, insn):
         Feature = insn.get_canon_feature()
@@ -552,12 +474,12 @@ class EBPFProc(idaapi.processor_t):
         
         if insn[1].type == o_imm and insn[1].dtype == dt_qword:
             if insn.ea in self.relocations:
-                self._apply_relocation(insn, self.relocations[insn.ea])
+                self.sorted_strings = apply_relocation(self.functions, self.rodata, self.sorted_strings, insn, self.relocations[insn.ea])
         
         abort = False
         if Feature & CF_CALL:
             if insn.ea in self.relocations:
-                self._apply_relocation(insn, self.relocations[insn.ea])
+                self.sorted_strings = apply_relocation(self.functions, self.rodata, self.sorted_strings, insn, self.relocations[insn.ea])
                 if self.relocations[insn.ea]['name'] == 'abort':
                     abort = True
             else:

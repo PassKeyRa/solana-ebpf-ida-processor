@@ -2,9 +2,9 @@ import idaapi
 
 class AnchorBeautifier():
     def __init__(self):
-        pass
+        self.is_anchor = self._is_anchor()
 
-    def is_anchor(self):
+    def _is_anchor(self):
         rodata = idaapi.get_segm_by_name(".rodata")
         if not rodata:
             return False
