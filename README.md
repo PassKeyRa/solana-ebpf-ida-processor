@@ -4,7 +4,7 @@ This is the processor plugin for IDA Pro that adds the ability to analyze Solana
 
 ## How to use
 
-Copy `solana-init.py` script and the `solana` folder to the directory `<ida pro installation>/procs` and select the processor on a Solana program file loading to IDA.
+Install `requirements.txt`. Copy `solana-init.py` script and the `solana` folder to the directory `<ida pro installation>/procs` and select the processor on a Solana program file loading to IDA.
 
 To dump a program from Solana mainnet use the following command:
 
