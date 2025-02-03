@@ -31,7 +31,6 @@ from solana.helpers import decode_name
 from solana.strings import add_string, recover_known_strings
 from solana.constants import *
 from solana.config import *
-from solana.anchor import AnchorBeautifier
 
 class DecodingError(Exception):
     pass
@@ -101,13 +100,12 @@ class EBPFProc(idaapi.processor_t):
             name = decode_name(name)
             self.functions[name] = ea
             idaapi.set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
+            seg = idaapi.getseg(ea)
+            if seg.type == idaapi.SEG_XTRN: # create external functions
+                idaapi.add_func(ea, ea+8)
         
         self.relocations, self.funcs, self.rodata, self.symtab = process_relocations(fname)
         self.sorted_strings = recover_known_strings(self.sorted_strings, self.symtab)
-
-        self.anchor_beautifier = AnchorBeautifier()
-        if self.anchor_beautifier.is_anchor:
-            print("[INFO] Anchor program detected")
         
         return True
     
