@@ -182,9 +182,9 @@ def apply_relocation(functions, rodata, sorted_strings, insn, relocation):
     
     if REL_TYPE[relocation['type']] == 'R_BPF_64_32': # call
         if relocation['mods'][0]['val'] != 0: # internal function call
-            insn.add_cref(relocation['mods'][0]['val'], insn[0].offb, idaapi.fl_CN)
+            insn.add_cref(relocation['mods'][0]['val'], insn[0].offb, idaapi.fl_CF)
         else:
-            insn.add_dref(functions[relocation['name']], insn[0].offb, idaapi.fl_CN)
+            insn.add_cref(functions[relocation['name']], insn[0].offb, idaapi.fl_CF)
     
     if REL_TYPE[relocation['type']] == 'R_BPF_64_64': # lddw
         if relocation['name'] in rodata:
