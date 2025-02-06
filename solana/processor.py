@@ -98,7 +98,6 @@ class EBPFProc(idaapi.processor_t):
     def ev_newfile(self, fname):
         for ea, name in idautils.Names():
             name = decode_name(name)
-            print(f'[{hex(ea)}] {name}')
             self.functions[name] = ea
             idaapi.set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
             seg = idaapi.getseg(ea)
@@ -107,7 +106,6 @@ class EBPFProc(idaapi.processor_t):
         
         self.relocations, self.funcs, self.rodata, self.symtab = process_relocations(fname)
         self.sorted_strings = recover_known_strings(self.sorted_strings, self.symtab)
-        print(self.relocations)
         
         return True
     
