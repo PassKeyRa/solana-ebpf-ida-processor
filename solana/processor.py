@@ -98,6 +98,7 @@ class EBPFProc(idaapi.processor_t):
     def ev_newfile(self, fname):
         for ea, name in idautils.Names():
             name = decode_name(name)
+            print(f'[{hex(ea)}] {name}')
             self.functions[name] = ea
             idaapi.set_name(ea, name, SN_NOCHECK | SN_FORCE) # demangle function names
             seg = idaapi.getseg(ea)
@@ -106,6 +107,7 @@ class EBPFProc(idaapi.processor_t):
         
         self.relocations, self.funcs, self.rodata, self.symtab = process_relocations(fname)
         self.sorted_strings = recover_known_strings(self.sorted_strings, self.symtab)
+        print(self.relocations)
         
         return True
     
@@ -347,18 +349,41 @@ class EBPFProc(idaapi.processor_t):
         insn[0].dtype = dt_dword
 
         if insn.ea in self.relocations:
-            insn[0].addr = idaapi.BADADDR
-            return
+            extern_ea = idaapi.get_segm_by_name("extern").start_ea
+            target_addr = idaapi.get_name_ea(extern_ea, self.relocations[insn.ea]['name'])
+            if target_addr == idaapi.BADADDR:
+                target_addr = idaapi.get_name_ea(extern_ea, "__imp_" + self.relocations[insn.ea]['name'])
+                if target_addr == idaapi.BADADDR:
+                    target_addr = idaapi.get_name_ea(0, self.relocations[insn.ea]['name'])
+                    if target_addr == idaapi.BADADDR:
+                        insn[0].addr = idaapi.BADADDR
+                        return
+            
+            insn[0].addr = target_addr
 
-        offset = ctypes.c_int32(self.imm).value
-        if self.src == 0:
-            # call imm
-            insn[0].addr = 8 * offset
-        elif self.src == 1:
-            # tail call
-            insn[0].addr = 8 * offset + insn.ea + 8
+            if self.src == 0:
+                to_patch = target_addr // 8
+            elif self.src == 1:
+                to_patch = (target_addr - 8 - insn.ea) // 8
+            else:
+                to_patch = None
+                print("UNKNOWN CALL TYPE")
+            
+            if to_patch:
+                try:
+                    idaapi.patch_bytes(insn.ea + 4, to_patch.to_bytes(4, byteorder='little', signed=True))
+                except Exception as e:
+                    print(f"[{hex(insn.ea)}] Patching call at {hex(insn.ea)} to {hex(to_patch)} (original: {to_patch}) failed: {e}")
         else:
-            print("UNKNOWN CALL TYPE")
+            offset = ctypes.c_int32(self.imm).value
+            if self.src == 0:
+                # call imm
+                insn[0].addr = 8 * offset
+            elif self.src == 1:
+                # tail call
+                insn[0].addr = 8 * offset + insn.ea + 8
+            else:
+                print("UNKNOWN CALL TYPE")
 
     def _ana_callx(self, insn):
         insn[0].type = o_reg
@@ -460,7 +485,7 @@ class EBPFProc(idaapi.processor_t):
         if Feature & CF_JUMP:
             dst_op_index = 0 if insn.itype == 0x5 else 2
             insn.add_cref(insn[dst_op_index].addr, insn[dst_op_index].offb, fl_JN)
-            idaapi.remember_problem(idaapi.PR_JUMP, insn.ea) # PR_JUMP ignored?
+            idaapi.remember_problem(idaapi.PR_JUMP, insn.ea)
 
         if insn[0].type == o_displ or insn[1].type == o_displ:
             op_ind = 0 if insn[0].type == o_displ else 1
@@ -538,7 +563,7 @@ class EBPFProc(idaapi.processor_t):
                     print("[ev_out_insn] invalid operation type in immediate for atomic instruction")
             else:
                 print("[ev_out_insn] analysis error: 3rd parameter for atomic instruction must be o_imm. debug me!")
-        elif ft & CF_CALL and cmd.ea in self.relocations and self.relocations[cmd.ea]['name'].startswith('sol_'):
+        elif ft & CF_CALL and idaapi.get_name(cmd.ea) and idaapi.get_name(cmd.ea).startswith('sol_'):
             ctx.out_custom_mnem("syscall", 15)
         else:
             ctx.out_mnem(15)
@@ -567,7 +592,7 @@ class EBPFProc(idaapi.processor_t):
                 addr = op.value
                 name = idaapi.get_name(addr)
                 if name:
-                    ctx.out_name_expr(op, addr, idaapi.BADADDR)
+                    ctx.out_name_expr(op, addr, idaapi.BADADDR) #1D1E8
                 else:
                     ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_64)
             elif op.dtype == dt_dword:
@@ -577,18 +602,18 @@ class EBPFProc(idaapi.processor_t):
                 ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
 
         elif op.type in [o_near, o_mem]:
-            if op.type == o_near and ctx.insn_ea in self.relocations:
-                ok = ctx.out_name_expr(op, self.functions[self.relocations[ctx.insn_ea]['name']], idaapi.BADADDR)
-                if not ok:
-                    ctx.out_tagon(idaapi.COLOR_ERROR)
-                    ctx.out_long(self.functions[self.relocations[ctx.insn_ea]['name']], 16)
-                    ctx.out_tagoff(idaapi.COLOR_ERROR)
+            #print(f"[{hex(ctx.insn_ea)}] op.type: {op.type}, op.addr: {hex(op.addr)}")
+            target_addr = idaapi.get_next_cref_from(ctx.insn_ea, 0)
+            if target_addr != idaapi.BADADDR:
+                ok = ctx.out_name_expr(op, target_addr, idaapi.BADADDR)
             else:
                 ok = ctx.out_name_expr(op, op.addr, idaapi.BADADDR)
-                if not ok:
-                    ctx.out_tagon(idaapi.COLOR_ERROR)
-                    ctx.out_long(op.addr, 16)
-                    ctx.out_tagoff(idaapi.COLOR_ERROR)
+            if not ok:
+                #print(f'[{hex(ctx.insn_ea)}] out_name_expr[0] failed: {op.addr}')
+                ctx.out_tagon(idaapi.COLOR_ERROR)
+                ctx.out_value(op, OOF_SIGNED|OOFW_IMM|OOFW_32)
+                ctx.out_tagoff(idaapi.COLOR_ERROR)
+                
                 
         elif op.type == o_phrase:
             ctx.out_printf('skb') # text color is a bit off. fix later.
