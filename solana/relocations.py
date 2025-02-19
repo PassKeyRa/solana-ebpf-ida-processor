@@ -22,7 +22,6 @@ def parse_relocation(rel_type, loc, val):
     elif type_ == 'R_BPF_64_NODYLD32':
         changes.append({'loc': loc, 'val': val & 0xFFFFFFFF})
     elif type_ == 'R_BPF_64_32':
-        #changes.append[{'loc': loc + 4, 'val': ((val - 8) / 8) & 0xFFFFFFFF}] strange, but that doesn't work
         changes.append({'loc': loc + 4, 'val': val & 0xFFFFFFFF})
     elif type_ == 'R_BPF_64_RELATIVE':
         pass

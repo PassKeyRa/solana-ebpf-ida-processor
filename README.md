@@ -27,18 +27,7 @@ Then select Yes:
 
 ## FLIRT signatures
 
-Currently the last version of the signatures file is `flirt/solana.sig`. Place the file into `%IDA_DIR%/sig/solana` (create the solana folder) and load it via `File -> Load file -> FLIRT signature file...` menu.
-
-### New signature file generation
-
-The preprocessor `flirt/flair-preprocessor.py` generates a PAT file based on the given ELF eBPF library file extracted from `.rlib` file with functions.
-
-To generate a new signature file you need to collect various `.rlib` files that you want to process, unpack them and generate the corresponding `.pat` file for each of `.o` libraries. After that, use the `sigmake` tool from official FLAIR suite to create a single `.sig` from all `.pat` files. So, just 2 commands:
-
-```bash
-python3 flait-preprocessor.py <input_file>.o <output_file>.pat
-sigmake -nSolanaEBPF *.pat solana.sig
-```
+Proceed to the [solana-ida-signatures-factory](https://github.com/PassKeyRa/solana-ida-signatures-factory) repository to generate function signatures.
 
 ## What works now
 
